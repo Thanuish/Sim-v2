@@ -61,7 +61,8 @@ class ArmTeleop:
     def update(self, ctrl: dict | None, dt: float = 0.01):
         """ctrl: {'pose':[x,y,z,qw,qx,qy,qz] (MuJoCo world), 'grip':0..1, 'stick':[x,y]}
 
-        Gripper: thumbstick DOWN closes, UP opens (WebXR reports up as negative y).
+        Gripper: positive stick y closes, negative opens. The web client sends thumbstick UP as
+        positive (it flips WebXR's y), so on the headset UP closes and DOWN opens.
         The gripper stays where you leave it.
         """
         if ctrl is None or ctrl.get("pose") is None:

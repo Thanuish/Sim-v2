@@ -612,7 +612,9 @@ function handleXRInput() {
       if (d.lengthSq() > 0) { moveView(d); viewSaveT = now; }
       stick = [0, 0];
     }
-    // stick up/down drives the gripper (down = close, up = open), integrated on the server
+    // stick up/down drives the gripper: UP = close, DOWN = open. WebXR reports up as negative
+    // y and the server closes on positive y, so y is flipped here.
+    stick = [stick[0], -stick[1]];
     msg[hand] = { pose: mjPose(grips[hand]), grip, stick, buttons: b.map(x => x ? 1 : 0), epoch: worldEpoch };
     const pb = prevButtons[hand];
     const edge = (i) => b[i] && !pb[i];

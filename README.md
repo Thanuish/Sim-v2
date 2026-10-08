@@ -159,7 +159,7 @@ options go in `TELEOP_ARGS`, for example `TELEOP_ARGS="--http --task blocks"`.
 | Button | What it does |
 |---|---|
 | **Grip** (side button, hold) | Take control of that arm. While you hold it, the gripper follows your hand. Let go to move your hand without moving the robot (like lifting a computer mouse). |
-| **Thumbstick down / up** | Close / open that arm's gripper. It stays where you leave it. |
+| **Thumbstick up / down** | Close / open that arm's gripper. It stays where you leave it. |
 | **Thumbstick click** | Show or hide the live camera screens |
 | **A** (right hand) | Start recording; press again to stop and save the demonstration as a success |
 | **B** (right hand) | Throw away the current recording and reset |
@@ -176,11 +176,11 @@ control (■), a ✋ when a gripper holds fabric, and the folding game.
 
 1. Hold **Grip** and bring the **open** gripper down until the fingertips are just above the
    fabric.
-2. Push the **thumbstick down** to close it. The fingertips swing down as they close and
+2. Push the **thumbstick up** to close it. The fingertips swing down as they close and
    pinch the fabric. ✋ appears on the panel.
 3. Move your hand: the fabric comes along. Every layer between the fingers is held, so you
    can pick up an edge (both layers) or a folded stack.
-4. Push the **thumbstick up** a little to let go.
+4. Push the **thumbstick down** a little to let go.
 
 A gripper that is already closed does not grab fabric when you push it into the jeans, and
 fabric slides off open fingers, just like with a real gripper.
