@@ -523,16 +523,49 @@ def rest_world(info: ClothInfo, m: mujoco.MjModel, d: mujoco.MjData) -> np.ndarr
 
 # ----------------------------------------------------------------- metrics
 def footprint_area(xy: np.ndarray, faces: np.ndarray, res: float = 0.005) -> float:
-    """Area [m^2] of the garment's projection onto the table (triangles rasterised at `res`)."""
-    from PIL import Image, ImageDraw
+    """Area [m^2] of the garment's projection onto the table (triangles rasterised at `res`).
+
+    Vectorised: a pixel counts if its centre lies within half a pixel of a triangle (filled
+    triangle plus outline, like PIL's polygon fill). The server computes this on the physics
+    thread, and a per-triangle Python loop stalled it for ~50 ms (VR hitches every second)."""
+    xy = np.asarray(xy, np.float64)
+    faces = np.asarray(faces)
     lo = xy.min(0) - 2 * res
     size = np.ceil((xy.max(0) + 2 * res - lo) / res).astype(int) + 1
-    img = Image.new("1", (int(size[0]), int(size[1])), 0)
-    dr = ImageDraw.Draw(img)
-    px = (xy - lo) / res
-    for a, b, c in faces:
-        dr.polygon([tuple(px[a]), tuple(px[b]), tuple(px[c])], fill=1)
-    return float(np.count_nonzero(np.asarray(img)) * res * res)
+    img = np.zeros((int(size[1]), int(size[0])), bool)
+    P = ((xy - lo) / res).astype(np.float32)[faces]               # (F, 3, 2) in pixels
+    p0 = np.ceil(P.min(1) - 0.5).astype(np.int32)                 # first candidate pixel
+    ext = (np.floor(P.max(1) + 0.5).astype(np.int32) - p0).max(1) + 1   # candidates per side
+    # orient every triangle counter-clockwise; edge normals (unit, pointing inwards)
+    a, b, c = P[:, 0], P[:, 1], P[:, 2]
+    cw = ((b - a)[:, 0] * (c - a)[:, 1] - (b - a)[:, 1] * (c - a)[:, 0]) < 0
+    b, c = np.where(cw[:, None], c, b), np.where(cw[:, None], b, c)
+    V = np.stack([a, b, c], 1)
+    E = np.roll(V, -1, axis=1) - V                                # edges a->b, b->c, c->a
+    N = np.stack([-E[..., 1], E[..., 0]], -1)
+    N /= np.maximum(np.linalg.norm(N, axis=-1, keepdims=True), 1e-12)
+    # triangles in batches by bounding-box size: K x K pixel candidates per triangle
+    K = 3
+    todo = np.ones(len(faces), bool)
+    while todo.any():
+        sel = np.where(todo & (ext <= K))[0]
+        todo[sel] = False
+        for chunk in np.array_split(sel, max(1, len(sel) * K * K // 2_000_000 + 1)):
+            if len(chunk) == 0:
+                continue
+            g = np.arange(K, dtype=np.int32)
+            px = p0[chunk, None, None, :] + np.stack(np.meshgrid(g, g, indexing="xy"), -1)  # (n,K,K,2)
+            # inwards distance of the pixel from each edge: n.(p - v) = n.p - n.v
+            Nc = N[chunk]
+            off = (Nc * V[chunk]).sum(-1)                                                  # (n,3)
+            dist = (px[..., None, 0] * Nc[:, None, None, :, 0] + px[..., None, 1] * Nc[:, None, None, :, 1]
+                    - off[:, None, None, :])                                               # (n,K,K,3)
+            inside = (dist >= -0.5).all(-1)
+            ix, iy = px[..., 0][inside], px[..., 1][inside]
+            ok = (ix >= 0) & (iy >= 0) & (ix < img.shape[1]) & (iy < img.shape[0])
+            img[iy[ok], ix[ok]] = True
+        K = K + 1 if K < 5 else 2 * K
+    return float(np.count_nonzero(img) * res * res)
 
 
 @lru_cache(maxsize=4)

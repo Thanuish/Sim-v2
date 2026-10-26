@@ -38,6 +38,11 @@ class ArmTeleop:
 
     STICK_DEADZONE = 0.15
     GRIPPER_RATE = 1.6      # full open->close in ~0.6 s at full stick deflection
+    # The headset sends a pose every 11-14 ms (72-90 Hz), the control runs every 10 ms: held
+    # between packets the target moves in uneven steps, which the joint servos turn into a buzz.
+    # Between packets the hand is extrapolated with its velocity (from the headset's timestamps),
+    # at most one packet interval ahead, so the target moves smoothly.
+    MAX_PACKET_GAP = 0.05   # [s] longer gaps (dropped packets, a pause): no extrapolation
 
     def __init__(self, pos_scale: float = 1.0, z_min: float | None = None):
         self.pos_scale = pos_scale
@@ -51,6 +56,12 @@ class ArmTeleop:
         self._c0_pos = self._c0_quat = self._e0_pos = self._e0_quat = None
         self.gripper = 0.0      # 0 = open, 1 = closed
         self._epoch = None      # client view-alignment epoch (changes on recenter)
+        self._pkt_t = None      # headset timestamp of the newest pose
+        self._pkt_pos = self._pkt_quat = None
+        self._vel = np.zeros(3)     # hand velocity [m/s] and angular velocity [rad/s] (world)
+        self._omega = np.zeros(3)
+        self._age = 0.0             # time since the newest pose arrived [s]
+        self._interval = 1 / 72     # packet interval (smoothed)
 
     def reset(self, ee_pos, ee_quat):
         self.engaged = False
@@ -69,7 +80,7 @@ class ArmTeleop:
             self.engaged = False
             return
         pose = np.asarray(ctrl["pose"], float)
-        c_pos, c_quat = pose[:3], quat_normalize(pose[3:7])
+        c_pos, c_quat = self._extrapolate(pose[:3], quat_normalize(pose[3:7]), ctrl.get("t"), dt)
         grip = float(ctrl.get("grip", 0.0))
         stick = ctrl.get("stick") or [0.0, 0.0]
         sy = float(stick[1]) if len(stick) > 1 else 0.0
@@ -98,3 +109,29 @@ class ArmTeleop:
 
     def disengage(self):
         self.engaged = False
+
+    def _extrapolate(self, pos, quat, t, dt):
+        """The hand pose now: the newest pose plus its motion since it was sent (see above)."""
+        if t is None:                                  # no timestamp: use the pose as it is
+            return pos, quat
+        if t != self._pkt_t:                           # a new packet
+            gap = t - self._pkt_t if self._pkt_t is not None else -1.0
+            if 0 < gap < self.MAX_PACKET_GAP:
+                self._vel = (pos - self._pkt_pos) / gap
+                rv = np.zeros(3)
+                mujoco.mju_quat2Vel(rv, quat_mul(quat, quat_conj(self._pkt_quat)), gap)
+                self._omega = rv
+                self._interval += 0.2 * (gap - self._interval)
+            else:
+                self._vel[:] = 0.0
+                self._omega[:] = 0.0
+            self._pkt_t, self._pkt_pos, self._pkt_quat = t, pos.copy(), quat.copy()
+            self._age = 0.0
+            return pos, quat
+        self._age += dt
+        h = min(self._age, self._interval)
+        dq = np.array([1.0, 0.0, 0.0, 0.0])
+        w = np.linalg.norm(self._omega)
+        if w > 1e-9:
+            mujoco.mju_axisAngle2Quat(dq, self._omega / w, w * h)
+        return pos + self._vel * h, quat_normalize(quat_mul(dq, quat))

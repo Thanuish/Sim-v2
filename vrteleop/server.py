@@ -18,6 +18,7 @@ import ssl
 import struct
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import mujoco
@@ -59,6 +60,10 @@ class TeleopSim:
         self.last_saved = None
         self.message = ""
         self.game = FoldGame()            # jeans task: the folding steps and the clock
+        # the fold score (~15 ms of numpy) runs on a worker so the sim loop never stalls on it
+        self._metrics_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="metrics")
+        self._metrics_job = None          # (future, verts, holding, generation)
+        self._generation = 0              # bumped on reset: drops a fold score of the old scene
         args.cloth_engine = args.cloth_engine or "mujoco"
         self._build(cloth_config_from_args(args))
 
@@ -69,7 +74,7 @@ class TeleopSim:
         self.m = self.info.model
         self.d = mujoco.MjData(self.m)
         self.rng = np.random.default_rng(args.seed)
-        self.arms = DualArms(self.info, args.task, args.scale)
+        self.arms = DualArms(self.info, args.task, args.scale, feedforward=not args.no_feedforward)
         self.cloth = make_engine(self.info, args.cloth_engine)     # None for the blocks task
         self.cloth_metrics = {}
         self.cloth_sent = None            # cloth version in the last pose packet
@@ -119,12 +124,17 @@ class TeleopSim:
         if self.cloth is not None:
             self.cloth.reset(self.d)
         self.cloth_metrics = {}
+        self._generation += 1
         self.game.reset()
         self.arms.reset(self.d)
 
     def get_renderer(self):
         if self.renderer is None:
-            self.renderer = mujoco.Renderer(self.m, self.args.img_h, self.args.img_w)
+            try:
+                self.renderer = mujoco.Renderer(self.m, self.args.img_h, self.args.img_w)
+            except Exception as e:        # no OpenGL (e.g. a server without a display)
+                raise RuntimeError(f"MuJoCo can't render camera images ({e}); on a machine without "
+                                   "a display, set MUJOCO_GL=egl (NVIDIA) or MUJOCO_GL=osmesa") from e
         return self.renderer
 
     def camera_packet(self, i: int) -> bytes:
@@ -153,11 +163,31 @@ class TeleopSim:
 
     def update_cloth_metrics(self):
         if self.cloth is not None:
-            self.cloth_metrics = self.cloth.metrics(self.d)
-            msg = self.game.update(self.cloth.verts(self.d), self.cloth_metrics,
-                                   any(self.cloth.holding(s) for s in S.SIDES))
-            if msg:
-                self.message = msg
+            V = self.cloth.verts(self.d)
+            self._apply_metrics(self.cloth.metrics_of(V), V, any(self.cloth.holding(s) for s in S.SIDES))
+
+    def _apply_metrics(self, metrics, verts, holding):
+        self.cloth_metrics = metrics
+        msg = self.game.update(verts, metrics, holding)
+        if msg:
+            self.message = msg
+
+    def poll_cloth_metrics(self, start: bool) -> bool:
+        """The fold score in the background: apply a finished one; with `start`, begin the next.
+        Returns True when a computation was started."""
+        job = self._metrics_job
+        if job is not None:
+            if not job[0].done():
+                return False
+            self._metrics_job = None
+            if job[3] == self._generation and self.cloth is not None:
+                self._apply_metrics(job[0].result(), job[1], job[2])
+        if not start or self.cloth is None:
+            return False
+        V = self.cloth.verts(self.d)          # a snapshot: the engine replaces it every frame
+        self._metrics_job = (self._metrics_pool.submit(self.cloth.metrics_of, V), V,
+                             any(self.cloth.holding(s) for s in S.SIDES), self._generation)
+        return True
 
     # -------------------------------------------------------------- recording
     def record_frame(self):
@@ -409,7 +439,14 @@ class TeleopSim:
                 # One camera per loop iteration (round-robin) so physics is never starved.
                 # If rendering is slow, the stream rate drops automatically (<= ~20% of wall time).
                 t_r = time.perf_counter()
-                await self.broadcast(self.camera_packet(cam_i))
+                try:
+                    packet = self.camera_packet(cam_i)
+                except RuntimeError as e:         # the screens are optional: keep simulating
+                    print(f"[cams] {e}\n[cams] camera screens turned off")
+                    self.stream_cams, self.cams_on = [], False
+                    self.message = "Camera screens unavailable (see the server window)"
+                    continue
+                await self.broadcast(packet)
                 cam_i = (cam_i + 1) % len(self.stream_cams)
                 spent = time.perf_counter() - t_r
                 next_cam = now + max(cam_dt / len(self.stream_cams), 4.0 * spent)
@@ -420,9 +457,8 @@ class TeleopSim:
                 if self.input_hz > 0:
                     self.log_input()
             since = now - self._metrics_t       # fold score: every 1 s when idle time allows, 3 s at most
-            if self.cloth is not None and (since > 3.0 or (since > 1.0 and not behind)):
-                self.update_cloth_metrics()
-                self._metrics_t = time.perf_counter()
+            if self.poll_cloth_metrics(since > 3.0 or (since > 1.0 and not behind)):
+                self._metrics_t = now
             if now >= next_status:
                 if now - rtf_w > 0.5:
                     rtf = (d.time - rtf_s) / (now - rtf_w) if d.time >= rtf_s else 1.0
@@ -597,6 +633,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--control-hz", type=float, default=100.0)
     p.add_argument("--stream-hz", type=float, default=90.0)
     p.add_argument("--scale", type=float, default=1.0, help="hand->robot translation scale")
+    p.add_argument("--no-feedforward", action="store_true",
+                   help="plain PD joint servos (the arm trails your hand by ~0.1 s; for comparison)")
     p.add_argument("--task", choices=list(S.TASKS), default=S.DEFAULT_TASK,
                    help="jeans: fold a pair of jeans (cloth); blocks: pick-and-place into a bin")
     p.add_argument("--cloth-init", choices=["flat", "crumpled"], default="flat",

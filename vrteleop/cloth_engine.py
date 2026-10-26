@@ -50,7 +50,11 @@ class ClothEngine(abc.ABC):
 
     def metrics(self, d: mujoco.MjData) -> dict:
         """Fold progress: coverage (1 flat .. ~0.3 folded), height, lifted."""
-        return C.fold_metrics(self.info, self.verts(d), S.TABLE_Z)
+        return self.metrics_of(self.verts(d))
+
+    def metrics_of(self, verts: np.ndarray) -> dict:
+        """metrics() for a snapshot of verts(d) (thread safe: the server runs it off the sim loop)."""
+        return C.fold_metrics(self.info, verts, S.TABLE_Z)
 
     def sync_render(self, renderer: mujoco.Renderer, d: mujoco.MjData):
         """Before a MuJoCo render: make it show the current cloth (engines outside MuJoCo)."""
