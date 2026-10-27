@@ -266,6 +266,7 @@ class Bench:
                     # lift the corner high, open fully while the leg hangs: the fabric must drop
                     self.move({"right": g + [0, 0, 0.30]}, 1.5)
                     self.advance(0.5)
+                    lifted = self.near_gripper_height()              # still carried after hanging 0.5 s
                     self.move({}, 0.9, close={"right": False})
                     self.advance(1.5)
                     still = self.engine.holding("right")
@@ -274,11 +275,12 @@ class Bench:
                     V = self.V()
                     near = np.linalg.norm(V - self.sim.ee_pose("right")[0], axis=1) < 0.10
                     hang = float(V[near, 2].max() - S.TABLE_Z) if near.any() else 0.0
-                    results.append((flick, k, held, still, hang))
+                    results.append((flick, k, held, still, hang, lifted))
                     self.snapshot(f"opened in the air {k}", lookat=self.sim.ee_pose("right")[0] - [0, 0, 0.12],
                                   distance=0.7)
                     continue
                 self.move({"right": g + [0, 0, 0.10]}, 1.0)
+                lifted = self.near_gripper_height()
                 self.move({"right": g + [0, 0, 0.01]}, 1.0)
                 n_follow = len(self.follow)
                 self.move({}, flick, close={"right": False})
@@ -286,29 +288,39 @@ class Bench:
                 self.advance(0.2)
                 still = self.engine.holding("right")
                 f = self.follow[n_follow] if len(self.follow) > n_follow else float("nan")
-                results.append((flick, k, held, still, f))
+                results.append((flick, k, held, still, f, lifted))
         print(f"\n  release trials ({n_points} grasp points x short flick / full open on the table /"
               f" full open in the air)")
-        print("    open   point  pinched  still held  follow [mm] (air: highest cloth within 10 cm of the"
-              " gripper 1.5 s after opening)")
-        for flick, k, held, still, f in results:
+        print("    open   point  pinched  carried [mm]  still held  follow [mm] (carried: highest cloth within 10 cm"
+              " of the gripper after lifting it 10 / 30 cm; air follow: the same 1.5 s after opening)")
+        for flick, k, held, still, f, lifted in results:
             lab = "air " if flick == "air" else f"{flick:3.1f}s"
-            print(f"    {lab}   {k:5d}  {str(held):7s}  {str(still):10s}  {1e3 * f:8.1f}")
+            print(f"    {lab}   {k:5d}  {str(held):7s}  {1e3 * lifted:12.1f}  {str(still):10s}  {1e3 * f:8.1f}")
         table = [r for r in results if r[2] and r[0] != "air"]
         air = [r for r in results if r[2] and r[0] == "air"]
         fol = np.array([r[4] for r in table if not np.isnan(r[4])])
+        # carried: the fabric came up with the gripper (table trials lift 10 cm, air trials 30 cm)
+        carried = [r for r in results if r[5] > (0.05 if r[0] != "air" else 0.15)]
         summary = {"pinched": sum(r[2] for r in results), "trials": len(results),
+                   "carried": len(carried),
                    "still_held": sum(r[3] for r in table + air),
                    "follow_mean_mm": 1e3 * float(fol.mean()) if len(fol) else float("nan"),
                    "follow_max_mm": 1e3 * float(fol.max()) if len(fol) else float("nan"),
                    "sticky": int((fol > 0.010).sum()),
                    "hung_in_air": sum(1 for r in air if r[4] > 0.05),
                    "air_hang_max_mm": 1e3 * max((r[4] for r in air), default=float("nan"))}
-        print(f"    pinched {summary['pinched']}/{summary['trials']}, still held after opening "
+        print(f"    pinched {summary['pinched']}/{summary['trials']}, carried {summary['carried']}/{summary['trials']}, "
+              f"still held after opening "
               f"{summary['still_held']}, fabric followed > 10 mm: {summary['sticky']}, "
               f"follow mean {summary['follow_mean_mm']:.1f} / max {summary['follow_max_mm']:.1f} mm; "
               f"opened in the air but fabric still hanging > 50 mm: {summary['hung_in_air']}/{len(air)}")
         return summary
+
+    def near_gripper_height(self, side: str = "right") -> float:
+        """Height above the table of the highest fabric within 10 cm of the gripper [m]."""
+        V = self.V()
+        near = np.linalg.norm(V - self.sim.ee_pose(side)[0], axis=1) < 0.10
+        return float(V[near, 2].max() - S.TABLE_Z) if near.any() else 0.0
 
     def poke_trials(self, n_points: int = 4):
         """Push an open / a closed gripper down into the jeans (without pinching), drag it a little

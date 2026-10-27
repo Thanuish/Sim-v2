@@ -658,6 +658,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--cloth-fast", action="store_true",
                    help="jeans task: cheaper cloth collisions (~40 %% less CPU), but folded or crumpled "
                         "fabric can cut through itself")
+    p.add_argument("--grasp-model", choices=["pinch", "friction"], default=None,
+                   help="newton cloth: override [grasp] model. pinch: the fabric between the pads rides with "
+                        "the gripper; friction: nothing is attached, the pads' friction holds it")
     p.add_argument("--slip-force", type=float, default=None,
                    help="jeans task: override the pull [N] at which fabric slips out of a pinch")
     p.add_argument("--randomize", type=float, default=0.05,
@@ -693,6 +696,8 @@ def cloth_config_from_args(args, garment: str | None = None, overrides: dict | N
     cfg = CC.load(garment or args.garment, args.cloth_config, over)
     if args.slip_force is not None:
         cfg.slip_force = args.slip_force
+    if args.grasp_model is not None:
+        cfg.grasp_model = args.grasp_model
     return cfg
 
 

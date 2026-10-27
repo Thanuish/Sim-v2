@@ -120,6 +120,40 @@ The MuJoCo column is with the arm feedforward of `fd59ed8`. Without it the same 
 1.9 % and the table penetration is 3.2 mm: the arms now move at the commanded speed instead of
 lagging 0.1 s behind it, which pulls the coarse MuJoCo cloth harder.
 
+## Grasp modes: pinch and friction
+
+The same benchmark with `--grasp-model pinch` and `--grasp-model friction`. "Carried" is the
+highest fabric within 10 cm of the gripper after lifting it 10 cm (table trials) or 30 cm (air
+trials, measured after hanging 0.5 s).
+
+| | pinch | friction |
+|---|---|---|
+| carried, release trials | 18/18 (115 mm / 313 mm) | 18/18 (123 mm / 319 mm) |
+| dropped after a full open, on the table | 6/6 | 6/6 |
+| dropped after a full open, in the air | 6/6 | 6/6 |
+| dropped after a short flick of the stick, on the table | 6/6 | not measured (see below) |
+| fold: gripper still holding after the operator opened it | 0 | **1** (the hems, short flick) |
+| fold: released fabric rising with the gripper | 0 mm | **23.5 mm** |
+| fold: triangle crossings | 0 | 0 |
+| fold: thread stretch, 99th pct / worst edge | 4.1 % / 15.9 % | 6.4 % / 61 % |
+| fold: final coverage | 0.46 | 0.43 |
+| poke / sweep: fabric on a gripper that never pinched | 0/16 | 0/16 |
+| cost, s wall per s simulated | 3.34 | 3.82 |
+
+Friction holds the fabric with nothing attached, as reliably as the pinch. Two things are worse:
+
+- **A short flick doesn't reliably let go.** Pinch mode releases once the pads open 4 mm (the
+  operator's flick). With friction, the jaws a third open still had the folded hems between the
+  fingers, and the fabric went up with the gripper (23.5 mm, counted as still holding). The bench
+  couldn't measure the table flick trials in this mode: its follow measure starts when the engine
+  stops reporting fabric between the pads, which didn't happen. A full open always releases.
+- **More stretch.** Without kinematic held points the squeezed patch is held only by friction, so
+  the threads next to the fingers stretch more (worst edge 61 %).
+
+Recommendation: keep `pinch` as the default. `friction` is the more physical model and carries
+fabric as well, so it is usable for data whose releases are full opens; the short flick needs
+work first.
+
 ## Offline data collection
 
 `scripts/collect.py` records the scripted fold as ordinary episodes (the VR HDF5 layout, the
