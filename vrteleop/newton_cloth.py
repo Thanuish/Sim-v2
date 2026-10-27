@@ -230,7 +230,7 @@ class NewtonVBDCloth(ClothEngine):
                 b.add_shape_mesh(body, mesh=mesh, cfg=cfg)
             else:
                 raise ValueError(f"collider geom type {t} not supported")
-            shape_side.append(k)
+            shape_side.append(k if fg else FREE_SIDE)   # forces(): the fabric's force on the fingers
         self.n_bodies = len(self.geoms)
         # the table (static), with its own friction
         cfg_table = newton.ModelBuilder.ShapeConfig(density=0.0, mu=mu_shape(p.table_friction),
@@ -298,6 +298,7 @@ class NewtonVBDCloth(ClothEngine):
         self.site = {s: m.site(f"{s}_gripper_pinch").id for s in S.SIDES}
         self.driver_q = {s: m.jnt_qposadr[m.joint(f"{s}_gripper_right_driver_joint").id] for s in S.SIDES}
         self._held_idx = {s: [] for s in S.SIDES}
+        self._clearing = {s: False for s in S.SIDES}     # released; fingers wait for the fabric to leave
         self._grasp = {s: {"armed": True, "stall": 0.0, "prev": 0.0, "gap0": 0.0} for s in S.SIDES}
         self._verts = None
         self._t_next = 0.0
@@ -432,7 +433,8 @@ class NewtonVBDCloth(ClothEngine):
         return out
 
     def forces(self) -> np.ndarray:
-        """(2, 3) contact force of the cloth on the left / right arm [N, world], last frame."""
+        """(2, 3) contact force of the cloth on the left / right gripper's fingers [N, world], last
+        frame."""
         if getattr(self, "_force_np", None) is None:
             self._force_np = self._force.numpy().astype(np.float64)
         return self._force_np
@@ -443,10 +445,29 @@ class NewtonVBDCloth(ClothEngine):
                 "newton": dataclasses.asdict(self.p), "grasp_model": self.grasp_model}
 
     # ------------------------------------------------------------ grasp
+    # The fingers' region in the pinch-site frame (x: across the fingers, y: the closing axis, z: toward
+    # the tips), with a margin: open jaws, the finger links and the pads.
+    FINGER_BOX = (np.array([-0.030, -0.070, -0.080]), np.array([0.030, 0.070, 0.035]))
+
+    def _fabric_in_fingers(self, d, s) -> bool:
+        R = d.site_xmat[self.site[s]].reshape(3, 3)
+        loc = (self.verts(d) - d.site_xpos[self.site[s]]) @ R
+        lo, hi = self.FINGER_BOX
+        return bool(np.all((loc >= lo) & (loc <= hi), axis=1).any())
+
     def update(self, d, grippers, dt):
         P = self.P
         for k, s in enumerate(S.SIDES):
             st = self._grasp[s]
+            if self._clearing[s] and self._frame != st.get("cleared_check"):
+                # After a release the fingers touch the fabric again only once it has left them. While
+                # they held, the fabric beside the pinch draped through the (non-colliding) finger links;
+                # colliding again at once pushed it out sideways and friction hooked it on the links, so
+                # it rose with the opened gripper (52-94 mm in 6 of 6 short-flick releases).
+                st["cleared_check"] = self._frame
+                if not self._fabric_in_fingers(d, s):
+                    self._fingers_collide(s, True)
+                    self._clearing[s] = False
             jaw = float(np.clip(d.qpos[self.driver_q[s]] / 0.8, 0, 1))
             closing = grippers[s] >= P.CMD_CLOSE
             if self.grasp_model == "friction":
@@ -476,7 +497,13 @@ class NewtonVBDCloth(ClothEngine):
             elif st["armed"]:
                 stalled = jaw > P.JAW_STALL and abs(jaw - st["prev"]) < 0.02 * dt / 0.01
                 st["stall"] = st["stall"] + dt if stalled else 0.0
-                if jaw >= P.JAW_TRIGGER or st["stall"] > 0.12:
+                # the fabric pushes back on the closing fingers: a real gripper stalls here. MuJoCo's
+                # jaws never feel this cloth (one-way coupling), so without this they closed to 8 mm
+                # on a folded leg four layers thick and crushed the layers through each other
+                # (248 crossings in the fold's hems pinch)
+                squeezing = (P.pad_gap(jaw) < self.SQUEEZE_GAP
+                             and np.linalg.norm(self.forces()[k]) > self.SQUEEZE_FORCE)
+                if jaw >= P.JAW_TRIGGER or st["stall"] > 0.12 or squeezing:
                     st["armed"] = False
                     self._try_grasp(d, k, s, jaw)
             st["prev"] = jaw
@@ -511,6 +538,7 @@ class NewtonVBDCloth(ClothEngine):
         self._count.assign(cnt)
         self._set_kinematic(idx, True)
         self._fingers_collide(s, False)
+        self._clearing[s] = False
         self._set_tethers(k, idx)
         self._held_idx[s] = [int(i) for i in idx]
         self._grasp[s]["gap0"] = self.P.pad_gap(jaw)
@@ -531,6 +559,9 @@ class NewtonVBDCloth(ClothEngine):
         flags[idx] = (flags[idx] | bit) if on else (flags[idx] & ~bit)
         self.nm.shape_flags.assign(flags)
 
+    SQUEEZE_FORCE = 2.0             # [N] fingers pressing on fabric this hard while closing: pinch now
+    SQUEEZE_GAP = 0.025             # ... once the pads are this close [m] (wider, the fingers are only
+                                    # pushing on the side of a pile: 78 N at a 64 mm gap in the hems pinch)
     TETHER_SLACK = 0.02             # a tether is 2 % (+ 1 mm) longer than the fabric it spans
 
     def _set_tethers(self, k: int, idx):
@@ -554,6 +585,13 @@ class NewtonVBDCloth(ClothEngine):
                 j[pts[better]] = tgt[a[better]]
                 L[pts[better]] = dist[better]
             L = L * (1 + self.TETHER_SLACK) + 0.001
+            # never shorter than the point is from its anchor now: a tether stops further stretch and
+            # never pulls. A folded, slightly stretched stack had points beyond their fabric distance;
+            # the tethers snapped them in at once, through the layers beside them (93 crossings in the
+            # fold's hems pinch)
+            X = self.s0.particle_q.numpy()[self.p0:self.p0 + self.N]
+            has = j >= 0
+            L[has] = np.maximum(L[has], np.linalg.norm(X[has] - X[j[has]], axis=1) + 0.001)
         tj, tl = self._teth_np
         tj[:, k], tl[:, k] = -1, 0.0
         sel = slice(self.p0, self.p0 + self.N)
@@ -565,7 +603,7 @@ class NewtonVBDCloth(ClothEngine):
     def _release(self, k, s):
         if self._held_idx[s]:
             self._set_kinematic(self._held_idx[s], False)
-            self._fingers_collide(s, True)
+            self._clearing[s] = True               # fingers collide again once the fabric is clear (update)
             self._set_tethers(k, [])
         cnt = self._count.numpy()
         cnt[k] = 0
@@ -575,6 +613,8 @@ class NewtonVBDCloth(ClothEngine):
     def _release_all(self):
         for k, s in enumerate(S.SIDES):
             self._release(k, s)
+            self._fingers_collide(s, True)         # a new episode: the fabric starts clear of them
+            self._clearing[s] = False
 
 
 def _has_geom(m, name):

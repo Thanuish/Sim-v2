@@ -89,19 +89,32 @@ were only made engine-independent in this phase):
 |---|---|---|---|
 | points | 303 | 8,887 | 8,887 |
 | triangle crossings (fold) | 0 | 17-25 | **0** |
-| thread stretch, 99th pct / worst edge | 2.3 % / 7.6 % | not measured | 5.1 % / 77 % (next to the pinch) |
+| thread stretch, 99th pct / worst edge | 2.3 % / 7.6 % | not measured | 4.1 % / 15.9 % |
 | rest jitter | 0.95 mm/s | not measured | **0.26 mm/s** |
 | fabric below the table top | 12.0 mm (contact spheres) | not measured | 0.0 mm |
 | pinched (release trials) | 18/18 | 8/8 per arm (teleop trials) | 18/18 |
-| released fabric following the gripper > 10 mm (short flick) | 1/6 | not measured | **6/6, up to 92 mm** |
-| opened in the air, fabric still hanging > 50 mm | 6/6 | not measured | 3/6 (2 fully, 334 mm) |
+| released fabric following the gripper > 10 mm | 1/12 | not measured | **0/12** |
+| opened in the air, fabric still hanging on the gripper | 6/6 | not measured | **0/6** |
 | fabric on a gripper that never pinched (poke / sweep) | 0/16 | 0/16 per arm | 0/16 |
-| cost, s wall per s simulated | 1.00 | 0.09 | 3.41 |
+| final coverage of the fold (lower = more compact) | 0.53 | | 0.46 |
+| cost, s wall per s simulated | 1.00 | 0.09 | 3.34 |
 
-The Newton cloth never passes through itself and lies still, but released fabric sticks to the
-fingers after a short flick of the stick: the fingers start touching the fabric again while it
-is still wrapped around them, and friction holds it. A full open on the table releases cleanly.
-This is the next thing to fix; `friction` grasp mode is not measured yet.
+Three fixes got the Newton column here; before them released fabric stuck to the fingers (6/12)
+and pinching a folded stack pushed its layers through each other (89-286 crossings):
+
+- **Fingers wait for the fabric to leave.** While a gripper holds, its fingers don't touch the
+  fabric, so the fabric beside the pinch drapes through the finger links. Colliding again at the
+  moment of release hooked it on them. Now the fingers collide again only once no fabric is
+  inside their region (`NewtonVBDCloth.FINGER_BOX`).
+- **The pinch fires when the fingers squeeze fabric.** MuJoCo's jaws never feel this cloth
+  (one-way coupling), so they closed to 8 mm on a folded leg four layers thick and crushed it.
+  The pinch now also triggers when the fabric pushes on the fingers with more than 2 N while the
+  pads are within 25 mm of each other.
+- **Tethers never pull.** A tether is at least as long as the point's distance to its anchor when
+  the pinch starts; before, tethers on a stretched stack snapped points through their neighbours.
+
+The air test now counts only fabric within 10 cm of the opened gripper: in two trials the leg
+had fallen against the other arm, which the old global measure counted as hanging.
 
 The MuJoCo column is with the arm feedforward of `fd59ed8`. Without it the same fold stretches
 1.9 % and the table penetration is 3.2 mm: the arms now move at the commanded speed instead of

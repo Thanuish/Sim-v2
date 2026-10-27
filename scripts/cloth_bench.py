@@ -269,7 +269,11 @@ class Bench:
                     self.move({}, 0.9, close={"right": False})
                     self.advance(1.5)
                     still = self.engine.holding("right")
-                    hang = float(self.V()[:, 2].max() - S.TABLE_Z)
+                    # the highest fabric within 10 cm of the opened gripper (a leg that falls against
+                    # the other arm is not hanging on this gripper)
+                    V = self.V()
+                    near = np.linalg.norm(V - self.sim.ee_pose("right")[0], axis=1) < 0.10
+                    hang = float(V[near, 2].max() - S.TABLE_Z) if near.any() else 0.0
                     results.append((flick, k, held, still, hang))
                     self.snapshot(f"opened in the air {k}", lookat=self.sim.ee_pose("right")[0] - [0, 0, 0.12],
                                   distance=0.7)
@@ -285,7 +289,8 @@ class Bench:
                 results.append((flick, k, held, still, f))
         print(f"\n  release trials ({n_points} grasp points x short flick / full open on the table /"
               f" full open in the air)")
-        print("    open   point  pinched  still held  follow [mm] (air: highest cloth 1.5 s after opening)")
+        print("    open   point  pinched  still held  follow [mm] (air: highest cloth within 10 cm of the"
+              " gripper 1.5 s after opening)")
         for flick, k, held, still, f in results:
             lab = "air " if flick == "air" else f"{flick:3.1f}s"
             print(f"    {lab}   {k:5d}  {str(held):7s}  {str(still):10s}  {1e3 * f:8.1f}")
