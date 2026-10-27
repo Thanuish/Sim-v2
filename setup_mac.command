@@ -16,6 +16,10 @@ echo "-> Creating .venv with Python 3.12"
 uv venv --python 3.12 --allow-existing .venv
 echo "-> Installing packages (mujoco, aiohttp, h5py, ...)"
 uv pip install --python .venv/bin/python -r requirements.txt
+if command -v nvidia-smi >/dev/null 2>&1; then     # Linux with an NVIDIA GPU: the Newton cloth engine
+  echo "-> NVIDIA GPU found: installing the Newton cloth engine"
+  uv pip install --python .venv/bin/python -r requirements-newton.txt || echo "Newton install failed: the GPU (Taichi) cloth is used instead"
+fi
 
 if [ ! -f assets/universal_robots_ur5e/ur5e.xml ]; then
   .venv/bin/python setup_assets.py

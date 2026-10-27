@@ -42,10 +42,41 @@ class GPUSettings:
 
 
 @dataclasses.dataclass
+class NewtonSettings:
+    """[newton]: the Newton VBD cloth engine (vrteleop/newton_cloth.py). SI units; the friction
+    coefficients are the real pairwise values (the engine converts them to Newton's
+    sqrt(cloth mu x shape mu) combination)."""
+    device: str = "cuda"               # cuda (an NVIDIA GPU) or cpu (slow; headless tests)
+    spacing: float = 0.010             # distance between points [m]
+    substeps: int = 16                 # solver substeps per 1/60 s frame
+    iterations: int = 8                # VBD iterations per substep
+    fps: int = 60
+    self_contact: bool = True          # fabric on fabric, vertex-triangle and edge-edge
+    tri_ke: float = 1.0e4              # in-plane stretch stiffness [N/m] (2D Lame mu)
+    tri_ka: float = 1.0e4              # in-plane area stiffness [N/m] (2D Lame lambda)
+    tri_kd: float = 1.5e-5             # in-plane damping [N s/m]
+    edge_ke: float = 5.0               # bending stiffness [N m/rad] per hinge (VBD scales it by the edge length)
+    edge_kd: float = 1.0e-3            # bending damping
+    particle_radius: float = 0.001     # contact radius of a point against the robot and the table [m]
+    self_contact_margin: float = 0.002  # layers of fabric rest this far apart [m]
+    self_contact_gap: float = 0.001    # extra reach of the self-contact search [m]
+    body_contact_gap: float = 0.002    # extra reach of the robot / table contact search [m]
+    full_surface_contact: bool = True  # robot and table touch edges and faces, not only the points
+    contact_ke: float = 1.0e4          # contact stiffness [N/m]
+    contact_kd: float = 1.0e-2         # contact damping [N s/m]
+    cloth_friction: float = 0.5        # friction coefficient, fabric on fabric
+    table_friction: float = 0.4        # ... fabric on the table
+    pad_friction: float = 1.5          # ... fabric on the silicone finger pads
+    gripper_friction: float = 0.5      # ... fabric on the rest of the gripper and the arm
+    settle_frames: int = 30            # frames simulated at reset before the clock starts
+
+
+@dataclasses.dataclass
 class ClothConfig:
     name: str
     garment: GarmentSpec
     gpu: GPUSettings = dataclasses.field(default_factory=GPUSettings)
+    newton: NewtonSettings = dataclasses.field(default_factory=NewtonSettings)
     # [simulation]
     timestep: float = 0.004
     solver_iterations: int = 30
@@ -53,6 +84,7 @@ class ClothConfig:
     slip_force: float = 30.0
     release_gap: float = 0.004
     pad_friction: float = 1.0
+    grasp_model: str = "pinch"         # [grasp] model: "pinch" or "friction" (newton engine)
 
     def to_json(self) -> str:
         """Everything needed to rebuild this cloth exactly (stored with every episode)."""
@@ -64,11 +96,15 @@ class ClothConfig:
         d = json.loads(text)
         g = _coerce_fields(GarmentSpec, d.pop("garment"), "recorded garment")
         gpu = GPUSettings(**_coerce_fields(GPUSettings, d.pop("gpu", {}), "recorded gpu"))
-        return cls(garment=GarmentSpec(**g), gpu=gpu, **d)
+        newton = NewtonSettings(**_coerce_fields(NewtonSettings, d.pop("newton", {}), "recorded newton"))
+        return cls(garment=GarmentSpec(**g), gpu=gpu, newton=newton, **d)
 
 
 SECTIONS = {"simulation": ("timestep", "solver_iterations"),
-            "grasp": ("slip_force", "release_gap", "pad_friction")}
+            "grasp": ("slip_force", "release_gap", "pad_friction", "model")}
+ENGINE_SECTIONS = {"gpu": GPUSettings, "newton": NewtonSettings}     # per-engine settings
+SECTION_KEYS = {("grasp", "model"): "grasp_model"}                  # file key -> ClothConfig field
+GRASP_MODELS = ("pinch", "friction")
 
 
 class ConfigError(ValueError):
@@ -120,7 +156,7 @@ def _resolve(garments: dict, name: str, path: Path, chain=()) -> dict:
     parent = table.pop("inherits", None)
     merged = _resolve(garments, parent, path, chain + (name,)) if parent else {}
     for k, v in table.items():
-        if (k in SECTIONS or k == "gpu") and isinstance(v, dict):
+        if (k in SECTIONS or k in ENGINE_SECTIONS) and isinstance(v, dict):
             merged[k] = {**merged.get(k, {}), **v}
         else:
             merged[k] = v
@@ -140,9 +176,9 @@ def load(name: str | None = None, path: str | Path | None = None,
     except tomllib.TOMLDecodeError as e:
         raise ConfigError(f"{path}: {e}") from None
     for k in data:
-        if k not in ("default", "garments", "gpu", *SECTIONS):
+        if k not in ("default", "garments", *ENGINE_SECTIONS, *SECTIONS):
             raise ConfigError(f"{path}: unknown top-level setting '{k}'"
-                              f"{_suggest(k, ['default', 'garments', 'gpu', *SECTIONS])}")
+                              f"{_suggest(k, ['default', 'garments', *ENGINE_SECTIONS, *SECTIONS])}")
     garments = data.get("garments", {})
     name = name or data.get("default")
     if not name:
@@ -154,10 +190,17 @@ def load(name: str | None = None, path: str | Path | None = None,
         for k, v in values.items():
             if k not in keys:
                 raise ConfigError(f"{path}: [{section}] unknown setting '{k}'{_suggest(k, keys)}")
-            settings[k] = v
+            settings[SECTION_KEYS.get((section, k), k)] = v
     settings = _coerce_fields(ClothConfig, settings, f"{path}")
-    gpu = {**data.get("gpu", {}), **fields.pop("gpu", {})}
-    gpu = GPUSettings(**_coerce_fields(GPUSettings, gpu, f"{path} [gpu]"))
+    if settings.get("grasp_model", "pinch") not in GRASP_MODELS:
+        raise ConfigError(f"{path}: [grasp] model must be one of {', '.join(GRASP_MODELS)}, "
+                          f"got {settings['grasp_model']!r}")
+    engines = {}
+    for section, cls in ENGINE_SECTIONS.items():
+        values = {**data.get(section, {}), **fields.pop(section, {})}
+        engines[section] = cls(**_coerce_fields(cls, values, f"{path} [{section}]"))
+    if engines["newton"].device not in ("cuda", "cpu"):
+        raise ConfigError(f"{path} [newton]: device must be cuda or cpu, got {engines['newton'].device!r}")
     g = _coerce_fields(GarmentSpec, fields, f"{path} [garments.{name}]")
     g.update(overrides or {})
     garment = GarmentSpec(**g)
@@ -171,7 +214,7 @@ def load(name: str | None = None, path: str | Path | None = None,
     if garment.layer_gap <= 2 * garment.sphere_r:
         raise ConfigError(f"{path} [garments.{name}]: layer_gap ({garment.layer_gap}) must be > "
                           f"2 * sphere_r ({2 * garment.sphere_r})")
-    return ClothConfig(name=name, garment=garment, gpu=gpu, **settings)
+    return ClothConfig(name=name, garment=garment, **engines, **settings)
 
 
 def names(path: str | Path | None = None) -> list[str]:

@@ -265,8 +265,15 @@ def fine_garment(g: GarmentSpec, spacing: float, thickness: float):
     thickness [m]). The two panels start a little more than one thickness apart (seams
     halfway) and settle into contact."""
     thick = thickness * spacing
-    g = dataclasses.replace(g, spacing=spacing, layer_gap=1.2 * thick)
-    return g, jeans_garment(g), thick
+    g, J = layered_garment(g, spacing, 1.2 * thick)
+    return g, J, thick
+
+
+def layered_garment(g: GarmentSpec, spacing: float, layer_gap: float):
+    """The garment at `spacing` with its front panel `layer_gap` [m] above the back one:
+    (garment, jeans_garment dict)."""
+    g = dataclasses.replace(g, spacing=spacing, layer_gap=layer_gap)
+    return g, jeans_garment(g)
 
 
 def place_flat(J: dict, pos, yaw: float, table_z: float, lift: float) -> np.ndarray:

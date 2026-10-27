@@ -1,0 +1,6 @@
+# Optional: the Newton VBD cloth engine (--cloth-engine newton), for NVIDIA GPUs (CUDA).
+# Install on top of requirements.txt:   pip install -r requirements-newton.txt
+# Exact versions: Newton's API changes between releases, and recorded episodes store these versions.
+-r requirements.txt
+newton==1.7.0
+warp-lang==1.18.0

@@ -1,0 +1,15 @@
+MuJoCo VR Teleop (github.com/Thanuish/Sim)
+
+This project reuses ideas and values from RoboSimStudio
+(https://github.com/robosimstudio/robosimstudio), licensed under the
+Apache License, Version 2.0. No RoboSimStudio files are copied; the places
+that follow its patterns say so in a comment. Its notice:
+
+    RoboSimStudio
+    Copyright 2026 Kaiyuan Chen
+
+    Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+A copy of the Apache License 2.0 is at https://www.apache.org/licenses/LICENSE-2.0.
+
+Robot models in assets/ keep their own licences (assets/*/LICENSE).

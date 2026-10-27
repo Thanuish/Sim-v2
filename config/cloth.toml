@@ -22,6 +22,9 @@ slip_force = 30.0            # pull [N] at which fabric slips out of a closed pi
 release_gap = 0.004          # the pinch lets go once the pads are this much further apart than when
                              # they closed [m]: a short flick of the stick opens it
 pad_friction = 1.0           # silicone finger pads on fabric (0.6 slippery .. 1.2 grippy)
+model = "pinch"              # newton engine: "pinch" = the points between the pads ride with the gripper
+                             # (like the other engines); "friction" = nothing is attached, the pads squeeze
+                             # the fabric and friction holds it (needs the fabric to fold between the pads)
 
 [gpu]                        # the GPU cloth engine (start.bat --cloth-engine gpu; XPBD on any Vulkan
                              # GPU). A garment can override: [garments.NAME.gpu]. The garment's size,
@@ -45,6 +48,41 @@ gripper_friction = 0.3       # ... fabric on an arm while its gripper pinches (a
                              # has no friction: fabric slides off open fingers instead of hanging on
 air_drag = 0.5               # [1/s]: dropped fabric floats down a little
 relaxation = 1.5             # solver over-relaxation (1 .. 1.8; leave as is)
+
+[newton]                     # the Newton VBD cloth engine (start.bat --cloth-engine newton; NVIDIA GPU,
+                             # pip install -r requirements-newton.txt). Not real time yet: these values
+                             # run at ~0.3 x real time on an RTX 4090 (docs/newton_engine.md).
+                             # A garment can override: [garments.NAME.newton]. The
+                             # garment's size and mass are shared; these replace its MuJoCo-only settings.
+device = "cuda"              # cuda (NVIDIA GPU, real time) or cpu (Warp on the processor: slow, for tests)
+spacing = 0.010              # distance between simulated points [m] (~8900 for the jeans; 0.008 = ~14000,
+                             # 30 % slower). The cost grows with the points
+substeps = 16                # solver steps per 1/60 s frame. VBD needs ~16 x 8 sweeps a frame for denim-like
+                             # stretch (a lifted leg stretches 2.4 % at 16 x 8, 12 % at 4 x 8, 25 % without tethers)
+iterations = 8               # VBD iterations per substep. substeps x iterations sets the stretch and the cost
+fps = 60                     # cloth frames per second of simulated time
+self_contact = true          # fabric on fabric (vertex-triangle and edge-edge, every substep). false = the
+                             # layers pass through each other (only for measuring the cost)
+tri_ke = 1.0e4               # in-plane stretch stiffness [N/m] (2D Lame mu). Denim ~1e4 .. 1e5; knits ~1e3
+tri_ka = 1.0e4               # in-plane area stiffness [N/m] (2D Lame lambda)
+tri_kd = 1.5e-5              # in-plane damping [N s/m]
+edge_ke = 5.0                # bending stiffness per hinge [N m/rad]. VBD scales it by the edge length, so
+                             # it depends on `spacing`: calibrate with scripts/fabric_calibrate.py
+edge_kd = 1.0e-3             # bending damping [N m s/rad]
+particle_radius = 0.001      # contact radius of the fabric against the robot and the table [m]
+self_contact_margin = 0.002  # layers of fabric rest this far apart [m] (two layers of 12 oz denim ~2 mm)
+self_contact_gap = 0.001     # the self-contact search reaches this much further [m]
+body_contact_gap = 0.002     # ... and the robot / table contact search this much [m]
+full_surface_contact = true  # the robot and the table touch the fabric's edges and faces, not only its
+                             # points (points ~8 mm apart with a 1 mm radius let a finger slip between them).
+                             # Needs CUDA (signed-distance fields); also cheaper than points-only there
+contact_ke = 1.0e4           # contact stiffness [N/m]
+contact_kd = 1.0e-2          # contact damping [N s/m]
+cloth_friction = 0.5         # friction coefficient, fabric on fabric (denim on denim ~0.5)
+table_friction = 0.4         # ... fabric on the laminate table
+pad_friction = 1.5           # ... fabric on the silicone finger pads (1.0 .. 2.0)
+gripper_friction = 0.5       # ... fabric on the rest of the gripper and the arm
+settle_frames = 30           # frames simulated when the scene resets, before the clock starts
 
 
 [garments.jeans]             # a pair of adult 12 oz denim jeans, W32 L32 regular fit

@@ -9,8 +9,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY requirements.txt .
+COPY requirements.txt requirements-newton.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
+# The Newton cloth engine (CUDA) for the GPU image: docker compose builds teleop-gpu with WITH_NEWTON=1
+ARG WITH_NEWTON=0
+RUN if [ "$WITH_NEWTON" = "1" ]; then pip install --no-cache-dir -r requirements-newton.txt; fi
 
 COPY . .
 # Pre-generate the procedural textures so the first start is quick

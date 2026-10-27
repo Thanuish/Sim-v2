@@ -60,22 +60,14 @@ class Bench:
                                           *server_args])
         self.sim = sim = TeleopSim(args)
         self.m, self.d = sim.m, sim.d
-        # the bench measures MuJoCo internals (thread tendons, contacts, the pinch's slip counter)
+        # every measurement goes through the cloth engine's interface (cloth_engine.ClothEngine)
+        self.engine = sim.cloth
         self.cloth = sim.cloth.info
-        self.grasp = sim.cloth.grasp
         self.ctrl_dt = 1.0 / args.control_hz
         self.home = {s: sim.arms.teleop[s].target_pos.copy() for s in S.SIDES}
         self.target = {s: self.home[s].copy() for s in S.SIDES}
         self.stick = {s: 0.0 for s in S.SIDES}
         self._next_input = 0.0
-        # thread tendons (inextensible warp/weft edges) and their rest lengths
-        self.threads = np.array([i for i in range(self.m.ntendon)
-                                 if (mujoco.mj_id2name(self.m, mujoco.mjtObj.mjOBJ_TENDON, i) or "")
-                                 .startswith(f"{self.cloth.name}_thread")])
-        self.thread_l0 = self.m.tendon_length0[self.threads].copy()
-        self._cloth_body_arr = self.cloth.body_ids.copy()
-        self._robot_bodies = np.array([i for i in range(self.m.nbody)
-                                       if (self.m.body(i).name or "").startswith(("left_", "right_"))])
         self.worst = {"stretch": 0.0, "penetration": 0.0}
         self.stretch_p99 = 0.0             # 99th percentile over edges, worst over time
         self.solver_iters: list[int] = []
@@ -100,7 +92,7 @@ class Bench:
         self.stick = {s: 0.0 for s in S.SIDES}
         self._next_input = 0.0
         self._held = {s: [] for s in S.SIDES}
-        self._slips = {s: g.slips for s, g in self.grasp.items()}
+        self._slips = self.engine.slips()
         self._released = []
 
     # ------------------------------------------------------------- stepping
@@ -124,39 +116,39 @@ class Bench:
             t_ctrl = d.time + self.ctrl_dt
             while d.time < t_ctrl - 1e-9:
                 mujoco.mj_step(m, d)
+                self.engine.step(d)
             self._measure()
 
+    def V(self) -> np.ndarray:
+        return self.engine.verts(self.d)
+
     def _measure(self):
-        m, d = self.m, self.d
-        strain = d.ten_length[self.threads] / self.thread_l0 - 1.0
+        d, e = self.d, self.engine
+        version = e.version(d)
+        if version == getattr(self, "_measured", None):     # the cloth hasn't changed since
+            return
+        self._measured = version
+        strain = e.thread_strain(d)
         self.worst["stretch"] = max(self.worst["stretch"], float(strain.max()))
         self.stretch_p99 = max(self.stretch_p99, float(np.percentile(strain, 99)))
-        self.solver_iters.append(int(d.solver_niter[0]))
-        if d.ncon:
-            con = d.contact                      # arrays of length ncon
-            b = m.geom_bodyid[np.maximum(con.geom, 0)]
-            side_cloth = (np.isin(b, self._cloth_body_arr) & (con.geom >= 0)) | (con.flex >= 0)
-            touches = side_cloth.any(axis=1)
-            if touches.any():
-                self.worst["penetration"] = max(self.worst["penetration"], float(-con.dist[touches].min()))
-                # by what the cloth touches: itself, the robot (grippers), or the world (table)
-                both = side_cloth.all(axis=1)
-                other = np.where(side_cloth[:, 0], b[:, 1], b[:, 0])
-                robot = ~both & touches & np.isin(other, self._robot_bodies)
-                world = ~both & touches & ~robot
-                for key, sel in (("pen_self", both), ("pen_robot", robot), ("pen_world", world)):
-                    if sel.any():
-                        self.worst[key] = max(self.worst.get(key, 0.0), float(-con.dist[sel].min()))
-        for s, g in self.grasp.items():
-            before, now = self._held[s], list(g.held)
-            if before and not now and g.slips == self._slips[s]:     # let go, not pulled out
-                z0 = float(C.verts(self.cloth, d)[before, 2].mean())
+        if e.name == "mujoco":
+            self.solver_iters.append(int(d.solver_niter[0]))
+        pen = e.penetration(d)
+        for key, v in pen.items():
+            self.worst[f"pen_{key}"] = max(self.worst.get(f"pen_{key}", 0.0), v) if not np.isnan(v) else v
+        self.worst["penetration"] = max([self.worst["penetration"]] + [v for v in pen.values() if not np.isnan(v)])
+        slips = e.slips()
+        for s in S.SIDES:
+            before, now = self._held[s], list(e.held(s))
+            if before and not now and slips == self._slips:      # let go, not pulled out
+                z0 = float(self.V()[before, 2].mean())
                 self._released.append((d.time, s, before, z0))
-            self._held[s], self._slips[s] = now, g.slips
+            self._held[s] = now
+        self._slips = slips
         keep = []
         for t0, s, vs, z0 in self._released:
             if d.time - t0 >= 0.8:
-                z = float(C.verts(self.cloth, d)[vs, 2].mean())
+                z = float(self.V()[vs, 2].mean())
                 self.follow.append(max(0.0, z - z0))
             else:
                 keep.append((t0, s, vs, z0))
@@ -165,7 +157,7 @@ class Bench:
     def n_crossings(self) -> int:
         """Pairs of cloth triangles that pass through each other (the garment is a closed tube
         apart from the waist and hems, so each one can show the pale inside)."""
-        return len(M.intersecting_pairs(C.verts(self.cloth, self.d), self.cloth.faces))
+        return len(M.intersecting_pairs(self.V(), self.cloth.faces))
 
     def phase(self, name: str, fn):
         t_sim, t_wall = self.d.time, time.perf_counter()
@@ -173,7 +165,7 @@ class Bench:
         self.phases.append((name, self.d.time - t_sim, time.perf_counter() - t_wall))
         self.crossings = max(self.crossings, self.n_crossings())
         if "release" in name:        # the operator has opened the gripper(s) and moved away
-            self.stuck += sum(g.holding for g in self.grasp.values())
+            self.stuck += sum(self.engine.holding(s) for s in S.SIDES)
         self.snapshot(name)
 
     def snapshot(self, label: str, lookat=None, distance: float = 1.45):
@@ -183,6 +175,7 @@ class Bench:
         cam.type = mujoco.mjtCamera.mjCAMERA_FREE
         cam.lookat[:] = [0.45, 0.0, S.TABLE_Z + 0.08] if lookat is None else lookat
         cam.distance, cam.azimuth, cam.elevation = distance, 200.0, -18.0
+        self.engine.sync_render(self.renderer, self.d)       # a cloth simulated outside MuJoCo
         self.renderer.update_scene(self.d, camera=cam)
         self.snaps.append((label, self.renderer.render().copy()))
 
@@ -201,17 +194,22 @@ class Bench:
         self.stick = {s: 0.0 for s in S.SIDES}
 
     def settle(self):
+        """Let the jeans lie still, then measure how much they still move (RMS vertex speed between
+        successive cloth states over 0.5 s)."""
         self.advance(1.5)
-        dof = self.cloth.dof_adr.ravel()
-        v = []
-        for _ in range(50):
+        prev, v = (self.d.time, self.V().copy()), []
+        t_end = self.d.time + 0.5
+        while self.d.time < t_end or not v:
             self.advance(self.ctrl_dt)
-            v.append(np.sqrt(np.mean(self.d.qvel[dof] ** 2)))
+            t, X = self.d.time, self.V()
+            if not np.array_equal(X, prev[1]):
+                v.append(np.sqrt(np.mean(np.sum((X - prev[1]) ** 2, axis=1))) / (t - prev[0]))
+                prev = (t, X.copy())
         self.jitter = float(np.mean(v))
 
     def fold(self):
         """Same choreography as scripts/fake_client.py --fold."""
-        V = C.verts(self.cloth, self.d)
+        V = self.V()
         far = V[:, 0] > np.median(V[:, 0])
         idx = np.where(far)[0]
         w = idx[np.argmax(V[far, 1] * 5 + V[far, 0])]
@@ -231,7 +229,7 @@ class Bench:
         self.phase("release", lambda: (self.move({}, 0.9, close={"left": False, "right": False}),
                                        self.move({"left": tl + [0, 0, 0.1], "right": tr + [0, 0, 0.05]}, 0.8),
                                        self.advance(0.5)))
-        V = C.verts(self.cloth, self.d)
+        V = self.V()
         hem = V[:, 1] < V[:, 1].min() + 0.03
         gh = np.r_[V[hem, 0].mean(), V[hem, 1].max() - 0.01, z0]
         self.phase("hems pinch", lambda: (self.move({"right": gh + [0, 0, 0.08]}, 1.5),
@@ -253,7 +251,7 @@ class Bench:
             for k in range(n_points):
                 self.reset()
                 self.advance(0.8)
-                V = C.verts(self.cloth, self.d)
+                V = self.V()
                 far = np.where(V[:, 1] < np.percentile(V[:, 1], 30))[0]       # the right arm's leg
                 u = np.linspace(V[far, 0].min() + 0.08, V[far, 0].max() - 0.08, n_points)[k]
                 edge = far[np.argsort(np.abs(V[far, 0] - u) + 5 * (V[far, 1] - V[far, 1].min()))[:1]][0]
@@ -263,15 +261,15 @@ class Bench:
                 self.move({"right": g + [0, 0, 0.08]}, 1.2)
                 self.move({"right": g}, 0.8)
                 self.move({}, 0.8, close={"right": True})
-                held = bool(self.grasp["right"].holding)
+                held = self.engine.holding("right")
                 if flick == "air":
                     # lift the corner high, open fully while the leg hangs: the fabric must drop
                     self.move({"right": g + [0, 0, 0.30]}, 1.5)
                     self.advance(0.5)
                     self.move({}, 0.9, close={"right": False})
                     self.advance(1.5)
-                    still = bool(self.grasp["right"].holding)
-                    hang = float(C.verts(self.cloth, self.d)[:, 2].max() - S.TABLE_Z)
+                    still = self.engine.holding("right")
+                    hang = float(self.V()[:, 2].max() - S.TABLE_Z)
                     results.append((flick, k, held, still, hang))
                     self.snapshot(f"opened in the air {k}", lookat=self.sim.ee_pose("right")[0] - [0, 0, 0.12],
                                   distance=0.7)
@@ -282,7 +280,7 @@ class Bench:
                 self.move({}, flick, close={"right": False})
                 self.move({"right": g + [0, 0, 0.12]}, 0.8)
                 self.advance(0.2)
-                still = bool(self.grasp["right"].holding)
+                still = self.engine.holding("right")
                 f = self.follow[n_follow] if len(self.follow) > n_follow else float("nan")
                 results.append((flick, k, held, still, f))
         print(f"\n  release trials ({n_points} grasp points x short flick / full open on the table /"
@@ -318,7 +316,7 @@ class Bench:
                     self.advance(0.8)
                     if closed:
                         self.move({}, 0.8, close={"right": True})    # close in the air: no pinch
-                    V = C.verts(self.cloth, self.d)
+                    V = self.V()
                     leg = np.where(V[:, 1] < np.percentile(V[:, 1], 40))[0]
                     u = np.linspace(V[leg, 0].min() + 0.1, V[leg, 0].max() - 0.1, n_points)[k]
                     row = leg[np.abs(V[leg, 0] - u) < 0.03]
@@ -337,8 +335,8 @@ class Bench:
                         self.move({"right": p}, 1.5)
                     self.move({"right": p + [0.0, 0.0, 0.25]}, 1.2)
                     self.advance(0.5)
-                    z = C.verts(self.cloth, self.d)[:, 2] - S.TABLE_Z
-                    results.append((motion, closed, k, bool(self.grasp["right"].holding),
+                    z = self.V()[:, 2] - S.TABLE_Z
+                    results.append((motion, closed, k, self.engine.holding("right"),
                                     float(z.max()), int((z > 0.03).sum()), self.n_crossings()))
                     self.snapshot(f"{motion} {'closed' if closed else 'open'} {k}",
                                   lookat=[u, 0.5 * (y0 + y1), S.TABLE_Z + 0.08], distance=0.9)
@@ -359,26 +357,30 @@ class Bench:
 
     # --------------------------------------------------------------- report
     def report(self) -> dict:
-        cov = C.fold_metrics(self.cloth, C.verts(self.cloth, self.d), S.TABLE_Z)["coverage"]
+        cov = C.fold_metrics(self.cloth, self.V(), S.TABLE_Z)["coverage"]
         sim_t = sum(p[1] for p in self.phases)
         wall_t = sum(p[2] for p in self.phases)
         r = {"vertices": self.cloth.nvert, "timestep_ms": self.m.opt.timestep * 1e3,
              "stretch_pct": 100 * self.worst["stretch"], "stretch_p99_pct": 100 * self.stretch_p99,
-             "solver_iters": float(np.mean(self.solver_iters)), "solver_iters_max": max(self.solver_iters),
+             "engine": self.engine.name,
+             "solver_iters": float(np.mean(self.solver_iters)) if self.solver_iters else float("nan"),
+             "solver_iters_max": max(self.solver_iters, default=0),
              "penetration_mm": 1e3 * self.worst["penetration"],
              **{f"{k}_mm": 1e3 * self.worst.get(k, 0.0) for k in ("pen_world", "pen_self", "pen_robot")},
-             "jitter_mm_s": 1e3 * self.jitter, "slips": sum(g.slips for g in self.grasp.values()),
+             "jitter_mm_s": 1e3 * self.jitter, "slips": self.engine.slips(),
              "follow_mm": 1e3 * max(self.follow, default=0.0), "releases": len(self.follow),
              "stuck": self.stuck, "crossings": self.crossings,
              "coverage": cov, "cost_s_per_s": wall_t / sim_t}
-        print(f"\n  vertices {r['vertices']}   timestep {r['timestep_ms']:.1f} ms")
+        print(f"\n  engine {r['engine']}   vertices {r['vertices']}   robot timestep {r['timestep_ms']:.1f} ms")
         print(f"  stretch      {r['stretch_pct']:6.2f} %      (worst edge; 99th pct {r['stretch_p99_pct']:.2f} %;"
               f" real denim < 2-3 %)")
-        print(f"  solver       {r['solver_iters']:6.1f} iterations mean, {r['solver_iters_max']} max"
-              f" (cap {self.m.opt.iterations})")
+        if self.solver_iters:
+            print(f"  solver       {r['solver_iters']:6.1f} iterations mean, {r['solver_iters_max']} max"
+                  f" (cap {self.m.opt.iterations})")
         print(f"  penetration  {r['penetration_mm']:6.2f} mm     (table {r['pen_world_mm']:.2f}, cloth-cloth "
-              f"{r['pen_self_mm']:.2f}, grippers {r['pen_robot_mm']:.2f}; sphere radius "
-              f"{1e3 * self.cloth.garment.sphere_r:.1f})")
+              f"{r['pen_self_mm']:.2f}, grippers {r['pen_robot_mm']:.2f}"
+              + (f"; sphere radius {1e3 * self.cloth.garment.sphere_r:.1f})" if self.engine.name == "mujoco"
+                 else "; outside MuJoCo: fabric below the table top, nan = not measured)"))
         print(f"  crossings    {r['crossings']:6d}       (cloth triangles passing through each other, worst"
               f" phase end; the pale inside shows; real jeans 0)")
         print(f"  jitter       {r['jitter_mm_s']:6.2f} mm/s   (at rest after settling)")

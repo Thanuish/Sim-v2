@@ -1,6 +1,6 @@
 # docker compose up            -> CPU-only (works on any PC)
-# docker compose up teleop-gpu -> NVIDIA GPU renders the camera screens (needs the NVIDIA
-#                                 Container Toolkit; physics runs on the CPU either way)
+# docker compose up teleop-gpu -> NVIDIA GPU: the Newton cloth engine (CUDA) and the camera
+#                                 screens rendered on the GPU (needs the NVIDIA Container Toolkit)
 #
 # The Quest connects to http://localhost:8080 over USB (adb reverse tcp:8080 tcp:8080 on the PC),
 # or over Wi-Fi to https://<PC-IP>:8443 after setting TELEOP_PUBLIC_HOST (see README).
@@ -25,6 +25,11 @@ services:
 
   teleop-gpu:
     <<: *teleop
+    build:
+      context: .
+      args:
+        WITH_NEWTON: "1"
+    image: mujoco-vr-teleop-gpu
     profiles: [gpu]
     environment:
       TELEOP_PUBLIC_HOST: ${TELEOP_PUBLIC_HOST:-}

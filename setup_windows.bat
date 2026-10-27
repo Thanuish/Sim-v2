@@ -10,6 +10,11 @@ if not exist .venv\Scripts\python.exe (
 )
 .venv\Scripts\python -m pip install --upgrade pip
 .venv\Scripts\python -m pip install -r requirements.txt || (echo Package install failed & pause & exit /b 1)
+rem With an NVIDIA graphics card: also the Newton cloth engine (CUDA)
+where nvidia-smi >nul 2>nul && (
+    echo NVIDIA GPU found: installing the Newton cloth engine...
+    .venv\Scripts\python -m pip install -r requirements-newton.txt || echo Newton install failed: the GPU ^(Taichi^) cloth is used instead
+)
 if not exist assets\universal_robots_ur5e\ur5e.xml .venv\Scripts\python setup_assets.py
 echo.
 echo Setup done. Start the server with start.bat

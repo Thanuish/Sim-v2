@@ -20,10 +20,15 @@ Layout (T = number of frames, sampled at a fixed rate in *sim* time):
     /teleop/head_pose               (T, 7)      operator head in MuJoCo frame (nan if unknown)
     /teleop/controller_pose         (T, 2, 7)
     /teleop/cloth_grasp             (T, 2, K)   cloth vertices pinched by [left, right] gripper (-1 = none;
-                                                K = 12 with the MuJoCo cloth, 96 with the GPU cloth)
+                                                K = 12 with the MuJoCo cloth, 96 with the GPU and Newton
+                                                cloth; int16, int32 for garments over 32767 vertices)
+    /teleop/cloth_contact_force     (T, 2, 3)   force of the cloth on the [left, right] arm [N, world]
+                                                (Newton engine; NaN where the engine doesn't measure it)
 
 Cloth episodes also store /cloth/faces (F, 3) and /cloth/rest_uv (N, 2) (the flat pattern
-in metres), and root attrs final_coverage / final_height (see cloth.fold_metrics).
+in metres), and root attrs final_coverage / final_height (see cloth.fold_metrics),
+cloth_engine, cloth_config (every garment and engine setting) and cloth_engine_settings (the
+engine's versions, e.g. Newton and Warp, and its derived values).
 
 Attributes on the root: task, fps, timestep, date, object_names, camera_names,
 joint_names, success (bool, user-flagged), and the full model XML.
@@ -145,7 +150,10 @@ class EpisodeRecorder:
             tg.create_dataset("head_pose", data=np.stack(f["head_pose"]).astype(np.float32))
             tg.create_dataset("controller_pose", data=np.stack(f["controller_pose"]).astype(np.float32))
             if "cloth_grasp" in f:
-                tg.create_dataset("cloth_grasp", data=np.stack(f["cloth_grasp"]).astype(np.int16))
+                g = np.stack(f["cloth_grasp"])
+                tg.create_dataset("cloth_grasp", data=g.astype(np.int16 if g.max(initial=0) < 32767 else np.int32))
+            if "cloth_contact_force" in f:
+                tg.create_dataset("cloth_contact_force", data=np.stack(f["cloth_contact_force"]).astype(np.float32))
             if self.cloth_faces is not None:
                 cg = h.create_group("cloth")
                 cg.create_dataset("faces", data=np.asarray(self.cloth_faces, np.int32))

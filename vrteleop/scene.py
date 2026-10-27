@@ -89,7 +89,7 @@ class SceneInfo:
     objects: dict = field(default_factory=dict)         # rigid task objects (name -> spec tuple)
     cloth: C.ClothInfo | None = None
     cloth_config: CC.ClothConfig | None = None           # garment + cloth simulation settings
-    cloth_engine: str | None = None                      # "mujoco" (flex in this model) or "gpu"
+    cloth_engine: str | None = None                      # "mujoco" (flex in this model), "gpu" or "newton"
     grasp_eq: dict = field(default_factory=dict)        # side -> [eq ids] (cloth pinch)
     web_textures: dict = field(default_factory=dict)    # extra textures for the web client
     arm_qpos_adr: dict = field(default_factory=dict)   # side -> (6,) qpos indices
@@ -370,10 +370,22 @@ def build_spec(task: str = DEFAULT_TASK, cloth: CC.ClothConfig | None = None,
         # simulated outside the model: only its material, and a render-only mesh the engine
         # updates before MuJoCo renders (camera screens, recorded images, videos)
         _add_denim_material(spec, cloth.garment)
-        _, J, thick = C.fine_garment(cloth.garment, cloth.gpu.spacing, cloth.gpu.thickness)
-        C.ClothRenderMesh.add(spec, C.place_flat(J, JEANS_POS, JEANS_YAW, TABLE_Z, 0.5 * thick),
-                              J, "denim")
+        _, J, X = external_garment(cloth, cloth_engine)
+        C.ClothRenderMesh.add(spec, X, J, "denim")
     return spec, cloth_info, web_tex
+
+
+def external_garment(cloth: CC.ClothConfig, cloth_engine: str):
+    """The jeans as an engine outside MuJoCo simulates them: (garment, jeans_garment dict, rest
+    positions lying flat on the table)."""
+    if cloth_engine == "newton":
+        p = cloth.newton
+        g, J = C.layered_garment(cloth.garment, p.spacing, p.self_contact_margin + 2 * p.particle_radius)
+        lift = p.particle_radius + 0.0005
+    else:
+        g, J, thick = C.fine_garment(cloth.garment, cloth.gpu.spacing, cloth.gpu.thickness)
+        lift = 0.5 * thick
+    return g, J, C.place_flat(J, JEANS_POS, JEANS_YAW, TABLE_Z, lift)
 
 
 def _look_quat(pos, target, up=(0, 0, 1)):

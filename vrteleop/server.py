@@ -122,7 +122,7 @@ class TeleopSim:
         r = self.args.randomize if randomize is None else randomize
         S.reset(self.info, self.d, self.rng, randomize=r, cloth_init=self.args.cloth_init)
         if self.cloth is not None:
-            self.cloth.reset(self.d)
+            self.cloth.reset(self.d, rng=self.rng, randomize=r, cloth_init=self.args.cloth_init)
         self.cloth_metrics = {}
         self._generation += 1
         self.game.reset()
@@ -221,6 +221,7 @@ class TeleopSim:
             k = self.cloth.max_held
             frame["cloth_verts"] = self.cloth.verts(d).copy()
             frame["cloth_grasp"] = [(list(self.cloth.held(s)) + [-1] * k)[:k] for s in S.SIDES]
+            frame["cloth_contact_force"] = self.cloth.forces()
         if self.recorder.camera_names:
             r = self.get_renderer()
             if self.cloth is not None:
@@ -287,7 +288,8 @@ class TeleopSim:
                      "cloth_spacing": self.cloth.info.garment.spacing,
                      "cloth_engine": self.cloth.name,
                      "garment": self.info.cloth_config.name,
-                     "cloth_config": self.info.cloth_config.to_json()}   # rebuilds it exactly
+                     "cloth_config": self.info.cloth_config.to_json(),   # rebuilds it exactly
+                     "cloth_engine_settings": json.dumps(self.cloth.settings())}
         n_frames = self.recorder.num_frames
         label = "success" if success else "failure"
 
@@ -639,11 +641,12 @@ def build_parser() -> argparse.ArgumentParser:
                    help="jeans: fold a pair of jeans (cloth); blocks: pick-and-place into a bin")
     p.add_argument("--cloth-init", choices=["flat", "crumpled"], default="flat",
                    help="jeans task: start spread flat, or dropped into a random heap")
-    p.add_argument("--cloth-engine", choices=["mujoco", "gpu"], default=None,
-                   help="jeans task: cloth simulation. gpu (the server's default): XPBD cloth on the "
-                        "GPU (~1 cm, Vulkan; settings in [gpu] of the cloth config), falls back to mujoco "
-                        "if it can't start; mujoco (the default of the scripts): flex cloth in the "
-                        "MuJoCo model (5.5 cm)")
+    p.add_argument("--cloth-engine", choices=["mujoco", "gpu", "newton"], default=None,
+                   help="jeans task: cloth simulation. gpu (the server's default): XPBD cloth on any GPU "
+                        "(Vulkan, CUDA or Metal; settings in [gpu] of the cloth config); newton: Newton's VBD "
+                        "solver with full self-collision (NVIDIA CUDA, requirements-newton.txt; settings in "
+                        "[newton]; slower than real time, see docs/newton_engine.md); mujoco (the default of "
+                        "the scripts, and the fallback): flex cloth in the MuJoCo model (5.5 cm)")
     p.add_argument("--garment", default=None,
                    help="jeans task: garment from the cloth config (default: its `default`), e.g. "
                         "jeans, shorts, stretch_jeans")
@@ -706,11 +709,17 @@ def main(argv=None):
 
     try:
         if args.cloth_engine is None and args.task == "jeans":
-            args.cloth_engine = "gpu"
-            try:
-                sim = TeleopSim(args)
-            except (ImportError, RuntimeError) as e:
-                print(f"[cloth] the GPU cloth engine didn't start ({e}); using the MuJoCo cloth")
+            sim = None
+            # newton is not in this list yet: on an RTX 4090 it isn't real time at denim-like stretch
+            # (docs/newton_engine.md); start it with --cloth-engine newton
+            for engine, fallback in (("gpu", "the MuJoCo cloth"),):
+                args.cloth_engine = engine
+                try:
+                    sim = TeleopSim(args)
+                    break
+                except (ImportError, RuntimeError) as e:
+                    print(f"[cloth] the {engine} cloth engine didn't start ({e}); trying {fallback}")
+            if sim is None:
                 args.cloth_engine = "mujoco"
                 sim = TeleopSim(args)
         else:

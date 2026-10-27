@@ -27,8 +27,10 @@ class ClothEngine(abc.ABC):
     render_subdiv: int = 2     # smoothing levels the headset applies to the mesh
 
     @abc.abstractmethod
-    def reset(self, d: mujoco.MjData):
-        """After the scene was reset: drop all grasps."""
+    def reset(self, d: mujoco.MjData, rng: np.random.Generator | None = None, randomize: float = 0.0,
+              cloth_init: str = "flat"):
+        """After the scene was reset: drop all grasps and lay the garment out again (`randomize`,
+        `cloth_init`: see scene.reset; an engine inside MuJoCo was already placed by it)."""
 
     @abc.abstractmethod
     def update(self, d: mujoco.MjData, grippers: dict[str, float], dt: float):
@@ -63,6 +65,64 @@ class ClothEngine(abc.ABC):
         """Changes whenever verts(d) changes (the server streams the cloth only then)."""
         return d.time
 
+    def forces(self) -> np.ndarray:
+        """(2, 3) contact force of the cloth on the left / right arm [N, world]; NaN if the
+        engine doesn't measure it."""
+        return np.full((2, 3), np.nan)
+
+    def settings(self) -> dict:
+        """The engine's own settings and versions, stored with every episode."""
+        return {"engine": self.name}
+
+    # ---- measurements (scripts/cloth_bench.py)
+    rest_threads: tuple[np.ndarray, np.ndarray] | None = None   # (E, 2) warp/weft edges, (E,) rest length
+
+    def thread_strain(self, d: mujoco.MjData) -> np.ndarray:
+        """Strain of every warp / weft thread edge (0 = rest length)."""
+        E, L0 = self.rest_threads
+        V = self.verts(d)
+        return np.linalg.norm(V[E[:, 0]] - V[E[:, 1]], axis=1) / L0 - 1.0
+
+    def penetration(self, d: mujoco.MjData) -> dict:
+        """Deepest penetration now [m] by what the cloth touches: world (the table), robot, self.
+        NaN where the engine can't tell. Outside MuJoCo: how far the fabric is below the table top."""
+        return {"world": max(0.0, S.TABLE_Z - float(self.verts(d)[:, 2].min())),
+                "robot": float("nan"), "self": float("nan")}
+
+    def slips(self) -> int:
+        """Points pulled out of a closed pinch so far (0 for engines without a slip model)."""
+        return 0
+
+
+def initial_cloth(X0: np.ndarray, rng: np.random.Generator | None, randomize: float,
+                  cloth_init: str) -> tuple[np.ndarray, bool]:
+    """Start positions for a garment simulated outside MuJoCo, from its flat rest `X0`, with the
+    same rules as scene.reset: `randomize` shifts (+/- randomize m) and turns (+/- 3 x randomize
+    rad) it on the table; "crumpled" holds it 30 cm up in a random orientation, to be dropped.
+    Returns (positions, dropped: the engine must let it fall and settle)."""
+    rng = rng or np.random.default_rng()
+    X0 = np.asarray(X0, np.float64)
+    centre = X0.mean(axis=0)
+    if cloth_init == "crumpled":
+        ax = rng.normal(size=3)
+        ax /= np.linalg.norm(ax)
+        q = np.zeros(4)
+        mujoco.mju_axisAngle2Quat(q, ax, rng.uniform(0.6, 1.4))
+        R = np.zeros(9)
+        mujoco.mju_quat2Mat(R, q)
+        X = (X0 - centre) @ R.reshape(3, 3).T * 0.9 + centre + [0, 0, 0.30]
+        lo = X[:, 2].min()
+        if lo < S.TABLE_Z + 0.02:
+            X[:, 2] += S.TABLE_Z + 0.02 - lo
+        return X.astype(np.float32), True
+    if randomize <= 0:
+        return X0.astype(np.float32), False
+    yaw = rng.uniform(-3 * randomize, 3 * randomize)
+    dxy = rng.uniform(-randomize, randomize, 2)
+    c, s = np.cos(yaw), np.sin(yaw)
+    Rz = np.array([[c, -s, 0], [s, c, 0], [0, 0, 1]])
+    return ((X0 - centre) @ Rz.T + centre + [dxy[0], dxy[1], 0]).astype(np.float32), False
+
 
 class MujocoCloth(ClothEngine):
     """The jeans as a MuJoCo flex in the scene model, with the modelled pinch grasp."""
@@ -77,13 +137,46 @@ class MujocoCloth(ClothEngine):
                                       slip_force=cc.slip_force, release_gap=cc.release_gap)
                       for s in S.SIDES}
 
-    def reset(self, d):
+    def reset(self, d, rng=None, randomize=0.0, cloth_init="flat"):
         for g in self.grasp.values():
             g.reset(self.model, d)
 
     def update(self, d, grippers, dt):
         for s, g in self.grasp.items():
             g.update(self.model, d, grippers[s], dt)
+
+    def slips(self):
+        return sum(g.slips for g in self.grasp.values())
+
+    def thread_strain(self, d):
+        m = self.model
+        if not hasattr(self, "_threads"):       # thread tendons (inextensible warp/weft edges)
+            self._threads = np.array([i for i in range(m.ntendon)
+                                      if (mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_TENDON, i) or "")
+                                      .startswith(f"{self.info.name}_thread")])
+            self._thread_l0 = m.tendon_length0[self._threads].copy()
+            self._robot_bodies = np.array([i for i in range(m.nbody)
+                                           if (m.body(i).name or "").startswith(("left_", "right_"))])
+        return d.ten_length[self._threads] / self._thread_l0 - 1.0
+
+    def penetration(self, d):
+        """From MuJoCo's contacts: the vertex spheres' and the cloth surface's."""
+        self.thread_strain(d)
+        out = {"world": 0.0, "robot": 0.0, "self": 0.0}
+        if not d.ncon:
+            return out
+        m, con = self.model, d.contact
+        b = m.geom_bodyid[np.maximum(con.geom, 0)]
+        side_cloth = (np.isin(b, self.info.body_ids) & (con.geom >= 0)) | (con.flex >= 0)
+        touches = side_cloth.any(axis=1)
+        both = side_cloth.all(axis=1)
+        other = np.where(side_cloth[:, 0], b[:, 1], b[:, 0])
+        robot = ~both & touches & np.isin(other, self._robot_bodies)
+        world = ~both & touches & ~robot
+        for key, sel in (("self", both), ("robot", robot), ("world", world)):
+            if sel.any():
+                out[key] = max(0.0, float(-con.dist[sel].min()))
+        return out
 
     def verts(self, d):
         return C.verts(self.info, d)
@@ -140,6 +233,7 @@ class GPUCloth(ClothEngine):
         self._verts = None
         self._t_next = 0.0
         self.render_mesh = C.ClothRenderMesh(m, self.sim.faces)
+        self.rest_threads = rest_threads(J, self.sim.X0)
         self._frame = 0                                   # cloth frames simulated
         self._synced: dict[int, int] = {}                # renderer -> frame it shows
 
@@ -159,10 +253,14 @@ class GPUCloth(ClothEngine):
         gR = d.xmat[self.grip_body].reshape(-1, 3, 3)
         return (c, R, self.box_half), (gc, gR)
 
-    def reset(self, d):
-        self.sim.reset()
+    def reset(self, d, rng=None, randomize=0.0, cloth_init="flat"):
+        X, drop = initial_cloth(self.sim.X0, rng, randomize, cloth_init)
+        self.sim.reset(X)
         boxes, grips = self._poses(d)
         self.sim.set_frame_poses(boxes, grips)          # start and end of the first frame
+        for _ in range(int(round(1.6 / self.frame_dt)) if drop else 0):   # let it fall into a heap
+            self.sim.set_frame_poses(boxes, grips)
+            self.sim.frame()
         self._held = {s: [] for s in S.SIDES}
         self._grasp = {s: {"armed": True, "stall": 0.0, "prev": 0.0, "gap0": 0.0} for s in S.SIDES}
         self._verts = None
@@ -246,6 +344,14 @@ class GPUCloth(ClothEngine):
         self.sim.set_arm_friction(k, 0.0)
 
 
+def rest_threads(J: dict, X0: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Warp / weft edges of a jeans_garment and their rest lengths as built (`X0`: lying flat; an
+    edge across a seam spans the layer gap too, as the MuJoCo cloth's thread tendons do)."""
+    E = np.asarray(J["threads"], int)
+    X0 = np.asarray(X0, np.float64)
+    return E, np.linalg.norm(X0[E[:, 0]] - X0[E[:, 1]], axis=1).clip(1e-6)
+
+
 def _geom_boxes(m: mujoco.MjModel, g: int, slices: int = 5, min_len: float = 0.03):
     """(centre, half size) boxes in the geom frame covering geom g: its bounding box, or for a
     mesh longer than min_len the bounding boxes of `slices` cuts along its longest axis."""
@@ -265,7 +371,12 @@ def _geom_boxes(m: mujoco.MjModel, g: int, slices: int = 5, min_len: float = 0.0
     return out
 
 
-ENGINES = {"mujoco": MujocoCloth, "gpu": GPUCloth}
+def _newton(info: S.SceneInfo) -> ClothEngine:
+    from .newton_cloth import NewtonVBDCloth       # Newton and Warp only when this engine is used
+    return NewtonVBDCloth(info)
+
+
+ENGINES = {"mujoco": MujocoCloth, "gpu": GPUCloth, "newton": _newton}
 
 
 def make_engine(info: S.SceneInfo, name: str | None = None) -> ClothEngine | None:
