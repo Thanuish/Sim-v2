@@ -330,7 +330,7 @@ def blender(work: Path, a):
             place(objs[g], A["pos"][first + i, k], A["mat"][first + i, k])
         cm.vertices.foreach_set("co", X[first + i].ravel())
         cm.update()
-        scene.render.filepath = str(out / f"{i:05d}.png")
+        scene.render.filepath = str(out / f"{first + i:05d}.png")
         bpy.ops.render.render(write_still=True)
         if i % 10 == 0 or i == n - 1:
             el = time.time() - t0
@@ -352,6 +352,8 @@ def main():
     p.add_argument("--every", type=int, default=1, help="render every n-th recorded frame")
     p.add_argument("--frames", type=int, default=None, help="stop after this many frames (previews)")
     p.add_argument("--first", type=int, default=0, help="start at this (exported) frame (previews)")
+    p.add_argument("--resume", action="store_true",
+                   help="continue an interrupted render in --work: keep the export and the finished frames")
     p.add_argument("--stage", choices=["all", "blender"], default="all", help=argparse.SUPPRESS)
     a = p.parse_args()
     if a.stage == "blender":
@@ -360,14 +362,21 @@ def main():
     ep = Path(a.episode)
     work = Path(a.work or ep.with_suffix(".render"))
     work.mkdir(parents=True, exist_ok=True)
-    n, fps = export(str(ep), work, a.every)
-    print(f"exported {n} frames to {work}", flush=True)
+    if a.resume and (work / "scene.json").exists():
+        fps = json.loads((work / "scene.json").read_text())["fps"]
+        done = sorted((work / "frames").glob("*.png"))
+        a.first = max(0, len(done) - 1)                 # the last one may be half written
+        print(f"resuming at frame {a.first}", flush=True)
+    else:
+        n, fps = export(str(ep), work, a.every)
+        print(f"exported {n} frames to {work}", flush=True)
     args = [a.blender_python, __file__, "--stage", "blender", "--work", str(work), "--width", str(a.width),
             "--height", str(a.height), "--samples", str(a.samples), "--lens", str(a.lens)]
     if a.eye:
         args += ["--eye", *map(str, a.eye)]
+    args += ["--first", str(a.first)]
     if a.frames:
-        args += ["--frames", str(a.frames), "--first", str(a.first)]
+        args += ["--frames", str(a.frames)]
     subprocess.run(args, check=True)
     import imageio_ffmpeg
     out = Path(a.out or ep.with_suffix(".cycles.mp4"))
