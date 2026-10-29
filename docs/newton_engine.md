@@ -277,9 +277,9 @@ Variants tried on the 5 mm jeans (first fold, footprint after letting go):
 
 | Lay-down | Footprint | Crossings | Result |
 |---|---|---|---|
-| Fixed 0.40 m carry, let go 4 cm up | 0.78 | 0 | leg springs back open |
+| Fixed 0.40 m carry, let go 4 cm up (10 mm mesh) | 0.78 | 0 | leg springs back open |
 | Mirror, let go at grasp height | 0.54 | 24 | the held patch crushes the layers below it |
-| 1.5 cm past the other leg, at grasp height | 0.57 | 16 | leg dragged taut: 15 % stretch at the end |
+| 1.5 cm past the other leg, at grasp height | 0.47 (whole fold) | 16 | leg dragged taut: 15 % stretch at the end |
 | Grippers 3-5 cm closer together while carrying | 0.48-0.67 | 0-294 | more stretch while carrying (6.9 %) |
 | Mirror, let go 1 cm / 6 mm up | 0.76-0.81 | 0 | top leg slides ~13 cm out |
 | **Mirror, let go 3 mm up (kept)** | **0.81** | **0** | slides out too; the hems fold makes up for it |
