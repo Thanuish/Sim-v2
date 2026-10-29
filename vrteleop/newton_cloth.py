@@ -37,6 +37,7 @@ from the start of the substep (the "held" atom's calibration note); a settle bef
 from __future__ import annotations
 
 import dataclasses
+import heapq
 
 import mujoco
 import numpy as np
@@ -551,7 +552,7 @@ class NewtonVBDCloth(ClothEngine):
         idx = self._between_pads(d, s, jaw)
         if len(idx) == 0:
             return
-        V = self.verts(d)
+        V = self._relax_patch(idx)
         b = self.grip_body[k]
         Rb, pb = d.xmat[b].reshape(3, 3), d.xpos[b]
         held = self._held.numpy()
@@ -569,6 +570,41 @@ class NewtonVBDCloth(ClothEngine):
         self._set_tethers(k, idx)
         self._held_idx[s] = [int(i) for i in idx]
         self._grasp[s]["gap0"] = self.P.pad_gap(jaw)
+
+    def _relax_patch(self, idx, passes: int = 40):
+        """The garment's points with the patch about to be pinched (`idx`) relaxed to its fabric's
+        length: the closing fingers drag the fabric between the pads outward before the pinch
+        triggers (the threads there were 11 % stretched a frame before it), and the pinch would
+        hold that stretch for as long as it holds (16 %, and 20 % in the threads beside it). Jacobi
+        strain limiting of the threads among the patch's points to TETHER_SLACK; the patch's
+        points are written back to the state, so the tethers measure from them."""
+        V = self.s0.particle_q.numpy()[self.p0:self.p0 + self.N].copy()
+        E, L0 = self.rest_threads
+        inside = np.zeros(self.N, bool)
+        inside[idx] = True
+        m = inside[E[:, 0]] & inside[E[:, 1]]
+        E, L = E[m], L0[m] * (1 + self.TETHER_SLACK)
+        for _ in range(passes):
+            dv = V[E[:, 1]] - V[E[:, 0]]
+            l = np.linalg.norm(dv, axis=1)
+            over = l > L
+            if not over.any():
+                break
+            c = dv[over] * ((l[over] - L[over]) / l[over] / 2)[:, None]
+            dq = np.zeros_like(V)
+            n = np.zeros(len(V))
+            np.add.at(dq, E[over, 0], c)
+            np.add.at(dq, E[over, 1], -c)
+            np.add.at(n, E[over, 0], 1)
+            np.add.at(n, E[over, 1], 1)
+            moved = n > 0
+            V[moved] += dq[moved] / n[moved, None]
+        for st in (self.s0, self.s1):
+            q = st.particle_q.numpy()
+            q[self.p0 + np.asarray(idx)] = V[idx]
+            st.particle_q.assign(q)
+        self._verts = None
+        return V
 
     def _set_kinematic(self, idx, on: bool):
         gi = np.asarray(idx, int) + self.p0
@@ -589,36 +625,59 @@ class NewtonVBDCloth(ClothEngine):
     SQUEEZE_FORCE = 2.0             # [N] fingers pressing on fabric this hard while closing: pinch now
     SQUEEZE_GAP = 0.025             # ... once the pads are this close [m] (wider, the fingers are only
                                     # pushing on the side of a pile: 78 N at a 64 mm gap in the hems pinch)
-    TETHER_SLACK = 0.02             # a tether is 2 % (+ 1 mm) longer than the fabric it spans
+    TETHER_SLACK = 0.02             # a tether is 2 % (+ a tenth of the spacing) longer than the fabric it spans
+
+    def _fabric_distance(self, idx):
+        """(nearest of the points `idx` along the fabric, distance to it [m]) for every point of the
+        garment: multi-source Dijkstra over the mesh's edges at their as-built lengths, so a path
+        between the panels goes round through a seam."""
+        if not hasattr(self, "_adj"):
+            F = self.faces
+            e = np.unique(np.sort(np.r_[F[:, [0, 1]], F[:, [1, 2]], F[:, [2, 0]]], axis=1), axis=0)
+            w = np.linalg.norm(self.X0[e[:, 0]] - self.X0[e[:, 1]], axis=1)
+            a, b = np.r_[e[:, 0], e[:, 1]], np.r_[e[:, 1], e[:, 0]]
+            order = np.argsort(a, kind="stable")
+            self._adj = (np.searchsorted(a[order], np.arange(self.N + 1)), b[order], np.r_[w, w][order])
+        start, nbr, wt = self._adj
+        dist = np.full(self.N, np.inf)
+        src = np.full(self.N, -1, np.int32)
+        heap = [(0.0, int(i), int(i)) for i in idx]
+        heapq.heapify(heap)
+        while heap:
+            dd, v, s0 = heapq.heappop(heap)
+            if dd >= dist[v]:
+                continue
+            dist[v], src[v] = dd, s0
+            for u, w in zip(nbr[start[v]:start[v + 1]], wt[start[v]:start[v + 1]]):
+                if dd + w < dist[u]:
+                    heapq.heappush(heap, (dd + w, int(u), s0))
+        return src, dist
 
     def _set_tethers(self, k: int, idx):
-        """Tether every point to its nearest anchor (`idx`, garment indices) of the same panel, at
-        the pattern distance between them (as gpu_cloth.GPUJeans._set_tethers): a pinch of the top
-        layer only must not lift the layer below through a shortcut."""
-        uv, panel = self.J["uv"], self.J["layer"]
+        """Tether every point to its nearest anchor (`idx`, garment indices) along the fabric, at
+        that distance (long-range attachments, Kim et al. 2012). Along the fabric, not across the
+        pattern: a pinch of the top layer only must not lift the layer below through a shortcut,
+        and the other leg is reached through the crotch. Straight pattern distances within one
+        panel (as gpu_cloth.GPUJeans._set_tethers) left the other leg and the hips untethered: a
+        leg laid over the other dragged them across the table faster than VBD's local sweeps
+        carry the pull, and the stretch stayed (6 % p99 at 5 mm)."""
+        idx = np.asarray(idx, int)
         j = np.full(self.N, -1, np.int32)
         L = np.zeros(self.N, np.float32)
-        idx = np.asarray(idx, int)
         if len(idx):
-            for pnl in (0, 1):
-                tgt = idx[(panel[idx] == pnl) | (panel[idx] == 2)]
-                pts = np.where((panel == pnl) | (panel == 2))[0]
-                if len(tgt) == 0:
-                    continue
-                D = np.linalg.norm(uv[pts, None, :] - uv[None, tgt, :], axis=2)
-                a = np.argmin(D, axis=1)
-                dist = D[np.arange(len(pts)), a]
-                better = (j[pts] < 0) | (dist < L[pts])
-                j[pts[better]] = tgt[a[better]]
-                L[pts[better]] = dist[better]
-            L = L * (1 + self.TETHER_SLACK) + 0.001
+            j, L = self._fabric_distance(idx)
+            L = L.astype(np.float32)
+            # slack: a fraction of the point spacing (1 mm at 10 mm). A fixed 1 mm let the threads at
+            # the pinch stretch 20 % at 5 mm, where it is a fifth of an edge
+            slack = 0.1 * self.p.spacing
+            L = L * (1 + self.TETHER_SLACK) + slack
             # never shorter than the point is from its anchor now: a tether stops further stretch and
             # never pulls. A folded, slightly stretched stack had points beyond their fabric distance;
             # the tethers snapped them in at once, through the layers beside them (93 crossings in the
             # fold's hems pinch)
             X = self.s0.particle_q.numpy()[self.p0:self.p0 + self.N]
             has = j >= 0
-            L[has] = np.maximum(L[has], np.linalg.norm(X[has] - X[j[has]], axis=1) + 0.001)
+            L[has] = np.maximum(L[has], np.linalg.norm(X[has] - X[j[has]], axis=1) + slack)
         tj, tl = self._teth_np
         tj[:, k], tl[:, k] = -1, 0.0
         sel = slice(self.p0, self.p0 + self.N)

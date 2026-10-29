@@ -226,3 +226,47 @@ rendered with Blender Cycles (bpy 4.2, Python 3.11, OptiX, denoised), from the r
 states and cloth vertices. The jeans are subdivided, given 0.9 mm thickness and a fabric shader
 (sheen, twill bump). The ceiling panel and a window are area lights. At 1080p and 64 samples a
 frame takes ~2 s on the RTX 4090, so a 25 s episode renders in ~30 min.
+
+### Where the stretch came from
+
+These were measured on the scripted fold with the 5 mm sewn jeans. Stretch is the 99th percentile
+of the threads; "median" is over the episode.
+
+| Change | Median | End | Footprint |
+|---|---|---|---|
+| Baseline (this section's defaults) | 4.2 % | 3.4 % | 0.50 |
+| Seam creases at rest flat (all rest angles 0) | 5.6 % | 5.6 % | 0.38 |
+| Seam crease hinges free | 4.4 % | 4.3 % | 0.61 |
+| Layers 1 mm apart instead of 2 | 4.0 % | 3.8 % | 0.51 |
+| 32 x 8 sweeps instead of 16 x 16 | 3.7 % | 3.5 % | 0.61 |
+| Seam band bending x2 instead of x6 | 3.3 % | 2.8 % | 0.63 |
+| **Tethers along the fabric, relaxed pinch, slack scaled (kept)** | **3.2 %** | **2.8 %** | **0.625** |
+
+The seam-band row was measured with the kept tethers already in place, so compare it with the
+kept row: it changed nothing, and the factor stays 6.
+
+What was found and kept:
+
+- **The pinch froze stretched fabric.** The closing fingers drag the fabric between the pads
+  outward before the pinch triggers: threads were 11 % stretched a frame before it and 16 % while
+  held. The patch is now relaxed to its fabric lengths when the pinch closes, and held threads
+  stay within 4.5 %.
+- **The tethers didn't reach the rest of the garment.** They ran in straight pattern lines
+  within one panel, so the other leg and the hips were never tethered. A leg laid over the other
+  dragged them across the table faster than VBD's local sweeps carry a pull, and table friction
+  then held the stretch. Tethers now run along the fabric (multi-source Dijkstra over the mesh,
+  through the seams): long-range attachments as Kim et al. (2012) define them.
+- **The tether slack was fixed at 1 mm.** That was tuned at 10 mm and is a fifth of an edge at
+  5 mm. It is now a tenth of the spacing.
+
+At the end, 368 threads are more than 4 % stretched, against 534 before. 96 % of them are
+within 3 cm of a seam, mostly along the fold line of the leg laid over. A sheet can't be folded
+flat along a curved line (the tapered inseam) without stretching or wrinkling. Real denim
+wrinkles there finer than 5 mm points can form.
+
+**The scripted fold now ends at 0.625, just over the 0.62 success line.** Its fixed 0.40 m
+carry lays the far leg ~20 cm past the near one, so the second pinch catches one leg. The old
+straight-across tethers dragged the other leg along, which a real gripper wouldn't do. Mirroring
+the carry and an arc over the leg didn't fix it: the free hem end swings past and lands beside
+the other leg. The choreography (scripts/cloth_bench.py fold) needs reworking; it is unchanged
+here so the numbers stay comparable.

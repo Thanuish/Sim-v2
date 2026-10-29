@@ -380,8 +380,9 @@ def main():
     subprocess.run(args, check=True)
     import imageio_ffmpeg
     out = Path(a.out or ep.with_suffix(".cycles.mp4"))
+    first = min(int(f.stem) for f in (work / "frames").glob("*.png"))     # frames are numbered by episode frame
     subprocess.run([imageio_ffmpeg.get_ffmpeg_exe(), "-y", "-loglevel", "error", "-framerate", f"{fps:g}",
-                    "-i", str(work / "frames" / "%05d.png"), "-c:v", "libx264", "-crf", "18", "-preset", "slow",
+                    "-start_number", str(first), "-i", str(work / "frames" / "%05d.png"), "-c:v", "libx264", "-crf", "18", "-preset", "slow",
                     "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(out)], check=True)
     print(f"wrote {out}")
 
