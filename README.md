@@ -9,6 +9,9 @@ jeans lying on a table. Everything you do is recorded as training data for robot
   on your graphics card.
 - The headset only shows the scene in its web browser. Nothing has to be installed on it.
 - There is a folding game: three folds in order, against the clock.
+- Offline, the jeans can be simulated with NVIDIA Newton's VBD solver (calibrated, sewn denim)
+  and rendered with Blender Cycles: see [docs/DEMO.md](docs/DEMO.md) and
+  [docs/newton_engine.md](docs/newton_engine.md).
 
 ```
   Meta Quest (web browser)                       Your computer (Python)
