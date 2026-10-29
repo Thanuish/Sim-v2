@@ -3,6 +3,8 @@ certs/
 __pycache__/
 *.pyc
 .venv/
+.venv-blender/
+*.render/
 *.mp4
 
 assets/generated/

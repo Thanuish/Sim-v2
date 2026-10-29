@@ -299,6 +299,14 @@ On Windows, **`replay.bat`** opens the newest recording in the viewer (Mac:
 `./replay.command`; macOS needs `mjpython` instead of `python` for the viewer).
 `--camera operator` films what the headset wearer saw.
 
+For a photorealistic video of a jeans episode recorded with the `gpu` or `newton` cloth, render
+it with Blender's Cycles path tracer (NVIDIA GPU; Blender's Python module needs Python 3.11):
+
+```bash
+uv venv -p 3.11 .venv-blender && uv pip install -p .venv-blender/bin/python bpy==4.2.0 numpy
+python scripts/render_cycles.py data/jeans/<session>/episode_0000.hdf5 --out fold.mp4   # ~2 s/frame at 1080p
+```
+
 ---
 
 ## 7. The cloth simulation and its settings
