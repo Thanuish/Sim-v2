@@ -276,6 +276,59 @@ def layered_garment(g: GarmentSpec, spacing: float, layer_gap: float):
     return g, jeans_garment(g)
 
 
+# Construction of a pair of five-pocket jeans, for an engine that gives each part of the garment its
+# own weight and stiffness (the Newton engine): (where, extra layers' weight, bending, stretch) as
+# multiples of the single layer of denim. The weights count the layers sewn together there (folded
+# waistband with interfacing, a hem folded twice, flat-felled seams, pocket patches, cotton pocket
+# bags, the fly's zip and facing); stitched layers bend stiffer than the sum of their layers, so
+# the bending factors sit between n and n^3 for n layers. Estimates from the construction, checked
+# by the total: ~0.65-0.75 kg for adult 12 oz jeans. The regions match denim_textures' drawing.
+WAISTBAND = 0.038        # [m] from the top
+HEM = 0.025              # [m] from the bottom of the leg
+SEAM_BAND = 0.010        # [m] either side of the out- and inseams
+GARMENT_PARTS = {
+    #               mass  bend  stretch
+    "waistband":   (3.0, 10.0, 3.0),
+    "fly":         (4.0, 8.0, 2.0),
+    "hem":         (3.0, 8.0, 2.0),
+    "seam":        (2.5, 6.0, 2.0),
+    "back_pocket": (2.0, 3.0, 1.5),
+    "pocket_bag":  (1.7, 1.3, 1.0),   # front: two layers of cotton pocketing (~0.14 kg/m^2 each) behind the denim
+}
+
+
+def garment_parts(J: dict, g: GarmentSpec) -> dict[str, np.ndarray]:
+    """Boolean mask per vertex of each part of GARMENT_PARTS, from the pattern coordinates (u from
+    the waist, v across; v < 0 = the right leg) and the panel (J["layer"]: 0 front, 1 back, 2 the
+    seams both share)."""
+    u, v, layer = J["uv"][:, 0], J["uv"][:, 1], J["layer"]
+    front, back = layer != 1, layer != 0
+    seam_pts = J["uv"][layer == 2]
+    seam_pts = seam_pts[(seam_pts[:, 0] > 1e-6) & (seam_pts[:, 0] < g.length - 1e-6)]   # not the openings
+    d = np.full(len(u), np.inf)
+    for k in range(0, len(seam_pts), 512):
+        d = np.minimum(d, np.linalg.norm(J["uv"][:, None] - seam_pts[None, k:k + 512], axis=2).min(axis=1))
+    centre = (np.abs(v) < 0.008) & (u < g.rise)                     # the fly / centre back seam
+    bp_u0 = WAISTBAND + 0.085                                        # back pockets as drawn
+    return {
+        "waistband": u < WAISTBAND,
+        "fly": front & (np.abs(v) < 0.035) & (u < 0.16),
+        "hem": u > g.length - HEM,
+        "seam": (d < SEAM_BAND) | (back & centre),
+        "back_pocket": back & (u > bp_u0) & (u < bp_u0 + 0.105) & (np.abs(np.abs(v) - 0.095) < 0.075),
+        "pocket_bag": front & (u > WAISTBAND) & (u < 0.22) & (np.abs(v) > 0.09),
+    }
+
+
+def garment_structure(J: dict, g: GarmentSpec) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Per-vertex (mass, bending, stretch) multiples of plain denim. Where parts overlap (a seam
+    through the waistband) the larger factor wins."""
+    out = np.ones((3, len(J["uv"])))
+    for name, mask in garment_parts(J, g).items():
+        out[:, mask] = np.maximum(out[:, mask], np.array(GARMENT_PARTS[name])[:, None])
+    return out[0], out[1], out[2]
+
+
 def place_flat(J: dict, pos, yaw: float, table_z: float, lift: float) -> np.ndarray:
     """World positions of a jeans_garment lying flat: waistband centre at pos, legs along yaw."""
     c, s = np.cos(yaw), np.sin(yaw)

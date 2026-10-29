@@ -5,7 +5,9 @@ the robots.
 
 The garment is the same two-panel pair of jeans as the other engines (cloth.jeans_garment: front
 and back panel sewn along the out- and inseams, open at the waist and the hems), at the [newton]
-section's spacing. Every 1/60 s of sim time:
+section's spacing, sewn: the waistband, fly, hems, seams and pockets weigh and bend like the layers
+sewn there (cloth.GARMENT_PARTS), on denim whose stretch and bending were fitted to textile tests
+(scripts/fabric_calibrate.py). Every 1/60 s of sim time:
 
   * the robot: each collision geom of the arms and grippers is a kinematic Newton body with the
     geom's real shape (capsules, cylinders, boxes; meshes as their convex hulls, as MuJoCo itself
@@ -164,7 +166,7 @@ def _hull(m: mujoco.MjModel, mesh_id: int) -> tuple[np.ndarray, np.ndarray]:
 class NewtonVBDCloth(ClothEngine):
     """The jeans on Newton's VBD solver; see the module docstring."""
     name = "newton"
-    max_held = 96
+    max_held = 96                     # points one pinch can hold at 10 mm spacing (scaled by the density)
     render_subdiv = 0
     P = C.PinchGrasp
 
@@ -176,6 +178,7 @@ class NewtonVBDCloth(ClothEngine):
         if p.device == "cuda" and not wp.is_cuda_available():
             raise RuntimeError("no CUDA GPU for the Newton cloth ([newton] device = \"cuda\")")
         self.grasp_model = cc.grasp_model
+        self.max_held = int(round(self.max_held * (0.010 / p.spacing) ** 2))
         self.full_surface = p.full_surface_contact and self.device.is_cuda   # SDFs need CUDA
         g, J, self.X0 = S.external_garment(cc, "newton")
         self.J, self.garment = J, g
@@ -244,11 +247,13 @@ class NewtonVBDCloth(ClothEngine):
         b.add_shape_box(-1, xform=wp.transform(wp.vec3(*map(float, tpos)), wp.quat_identity()),
                         hx=float(hx), hy=float(hy), hz=float(hz), cfg=cfg_table)
         shape_side.append(FREE_SIDE)
-        # the garment: mass lumped by area, so the jeans weigh garment.mass
+        # the garment: plain denim of fabric_density, made heavier and stiffer where it is sewn
+        # (structure: waistband, fly, hems, seams, pockets; cloth.GARMENT_PARTS), or a uniform sheet
+        # lumped by area so the jeans weigh garment.mass
         F = self.faces
         X = self.X0
         area = 0.5 * np.linalg.norm(np.cross(X[F[:, 1]] - X[F[:, 0]], X[F[:, 2]] - X[F[:, 0]]), axis=1).sum()
-        self.areal_density = g.mass / area
+        self.areal_density = p.fabric_density if p.structure else g.mass / area
         b.add_cloth_mesh(pos=wp.vec3(0.0, 0.0, 0.0), rot=wp.quat_identity(), scale=1.0, vel=wp.vec3(0.0, 0.0, 0.0),
                          vertices=[wp.vec3(*map(float, v)) for v in X], indices=F.ravel().tolist(),
                          density=float(self.areal_density), tri_ke=p.tri_ke, tri_ka=p.tri_ka, tri_kd=p.tri_kd,
@@ -256,8 +261,11 @@ class NewtonVBDCloth(ClothEngine):
                          label="jeans")
         b.color()
         nm = self.nm = b.finalize(device=self.device)
-        nm.soft_contact_ke, nm.soft_contact_kd, nm.soft_contact_mu = p.contact_ke, p.contact_kd, p.cloth_friction
         self.p0 = nm.particle_count - N                      # first garment particle (0: only cloth)
+        if p.structure:
+            self._apply_structure(nm, J, g)
+        self.mass = float(nm.particle_mass.numpy()[self.p0:].sum())
+        nm.soft_contact_ke, nm.soft_contact_kd, nm.soft_contact_mu = p.contact_ke, p.contact_kd, p.cloth_friction
         SB = newton.solvers.SolverBase
         self.solver = newton.solvers.SolverVBD(
             nm, iterations=p.iterations, integrate_with_external_rigid_solver=True,
@@ -308,6 +316,25 @@ class NewtonVBDCloth(ClothEngine):
         self._synced: dict[int, int] = {}
         self.contact_force = np.zeros((2, 3))
         self.versions = {"newton": newton.__version__, "warp": wp.__version__}
+
+    def _apply_structure(self, nm, J, g):
+        """Per-part weight, bending and stretch (cloth.garment_structure): the points' masses, each
+        hinge's bending stiffness (the mean of its edge's two points) and each triangle's stretch
+        stiffness (the mean of its corners)."""
+        mass_k, bend_k, stretch_k = C.garment_structure(J, g)
+        p0 = self.p0
+        mass = nm.particle_mass.numpy()
+        mass[p0:] *= mass_k
+        nm.particle_mass.assign(mass)
+        nm.particle_inv_mass.assign(np.where(mass > 0, 1.0 / np.maximum(mass, 1e-12), 0.0).astype(np.float32))
+        e = nm.edge_indices.numpy()[:, 2:4] - p0                 # the hinge's shared edge
+        bend = nm.edge_bending_properties.numpy()
+        bend[:, 0] *= bend_k[e].mean(axis=1)
+        nm.edge_bending_properties.assign(bend)
+        t = nm.tri_indices.numpy() - p0
+        tri = nm.tri_materials.numpy()
+        tri[:, :2] *= stretch_k[t].mean(axis=1)[:, None]          # ke, ka
+        nm.tri_materials.assign(tri)
 
     # ------------------------------------------------------------ simulation
     def _poses(self, d: mujoco.MjData):
@@ -441,7 +468,7 @@ class NewtonVBDCloth(ClothEngine):
 
     def settings(self) -> dict:
         return {"engine": self.name, **self.versions, "device": str(self.device),
-                "areal_density": float(self.areal_density), "particles": self.N,
+                "areal_density": float(self.areal_density), "mass": self.mass, "particles": self.N,
                 "newton": dataclasses.asdict(self.p), "grasp_model": self.grasp_model}
 
     # ------------------------------------------------------------ grasp

@@ -163,3 +163,66 @@ session folder, `index.csv`, optionally an MP4), in simulation time:
 
 First episode on this workstation: 25.1 s, 752 frames, footprint 61.6 % of flat (success),
 189 s of wall time (with the benchmark sharing the GPU).
+
+## Calibrated denim, sewn jeans, path-traced video
+
+The numbers above are for the 10 mm sheet at 16 x 8. The Newton engine's defaults are now 5 mm
+points, 16 x 16 sweeps, fitted denim and a sewn garment (`config/cloth.toml [newton]`).
+
+**Calibration** (`scripts/fabric_calibrate.py`). VBD's stiffnesses are per hinge and per
+triangle, so the values that make cloth behave like denim depend on the spacing and on the
+sweeps. The script runs textile tests on a strip or disc of 12 oz denim (0.407 kg/m²) with the
+engine's own solver and fits:
+
+| Test | Target | 10 mm, 16 x 8 | 5 mm, 16 x 16 (defaults) |
+|---|---|---|---|
+| Stretch at 49 N/m (Kawabata EMT) | 1 % (denim with its yarns straight) | tri_ke 655 → 3 % (fitted to 3 %) | tri_ke 2890 → 0.99 % |
+| Cantilever droop at 7 cm (ASTM D1388, bending length 3.5 cm) | 41.5° | edge_ke 0.32 → 41.4° | edge_ke 6.61 → 41.2° |
+| Cusick drape coefficient (check, not fitted) | 0.6–0.85 | 0.95 | 0.92 |
+
+- **The 10 mm mesh can't drape like denim.** A 30 cm disc stays nearly flat at any bending stiffness.
+- **The drape at 5 mm is a little stiffer than real denim.**
+- **The old values were far off at 5 mm.** edge_ke 5 drooped 75° and tri_ke 1e4 stretched 0.95 %.
+- **At 16 x 8, VBD stops converging for stiff hinges at 5 mm.** The droop hardly depends on the
+  stiffness there, and the script warns when that happens.
+- **The stretch target is 1 %, not the 3 % a tester reads.** Most of the 3 % is the crimp of the
+  yarns straightening at almost no load. Fitted to 3 % (tri_ke 820), the linear model let the
+  folded jeans stretch 16 % (p99), and the stretch stayed.
+
+**Sewn jeans** (`cloth.GARMENT_PARTS`). The waistband, fly, hems, out- and inseams, back
+pockets and front pocket bags are heavier and stiffer than plain denim, by the layers sewn
+there. The jeans weigh 0.46 kg. Real 12 oz jeans weigh 0.6–0.7 kg; the rest is hardware and
+seam allowances, which the model leaves out.
+
+**Fold, scripted operator, seed 0**
+
+| | 10 mm sheet, 16 x 8 | 5 mm sewn, 16 x 16 |
+|---|---|---|
+| Points | 8 887 | 36 179 |
+| Thread stretch p99, median over the episode / worst moment / end | 2.4 % / 3.9 % / — | 4.2 % / 6.7 % / 3.4 % |
+| Layers through each other | 0 | 0 |
+| Final footprint | 0.45 (success) | 0.50 (success) |
+| Wall time for the 25 s fold | 94 s | 414 s |
+
+**Settings tried on the way, 5 mm sewn**
+
+| Settings | Stretch p99 |
+|---|---|
+| tri_ke 820, 16 x 8 | 16 % |
+| tri_ke 1e4, 16 x 8 | 7.8 % |
+| tri_ke 1e4, 16 x 16 | 6.3 % |
+| tri_ke 820, 16 x 8, no structure | 27 % (84 % at the end) |
+| tri_ke 820, 16 x 8, strain limiting (Provot) at 4 % | 7.4 % |
+
+The structure helps.
+
+Strain limiting didn't work and was removed. The stretch at the end sits along the inseams of
+the folded stack, and no layers cross. With friction switched off it relaxes only partly. A
+strain limiter shortened the threads, and the solver lengthened them again within a frame.
+What pushes them is not found yet.
+
+**Path-traced video** (`scripts/render_cycles.py`). Episodes from the gpu or newton cloth are
+rendered with Blender Cycles (bpy 4.2, Python 3.11, OptiX, denoised), from the recorded robot
+states and cloth vertices. The jeans are subdivided, given 0.9 mm thickness and a fabric shader
+(sheen, twill bump). The ceiling panel and a window are area lights. At 1080p and 64 samples a
+frame takes ~2 s on the RTX 4090, so a 25 s episode renders in ~30 min.

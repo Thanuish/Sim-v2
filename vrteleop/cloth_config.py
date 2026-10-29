@@ -47,16 +47,19 @@ class NewtonSettings:
     coefficients are the real pairwise values (the engine converts them to Newton's
     sqrt(cloth mu x shape mu) combination)."""
     device: str = "cuda"               # cuda (an NVIDIA GPU) or cpu (slow; headless tests)
-    spacing: float = 0.010             # distance between points [m]
+    spacing: float = 0.005             # distance between points [m]
     substeps: int = 16                 # solver substeps per 1/60 s frame
-    iterations: int = 8                # VBD iterations per substep
+    iterations: int = 16               # VBD iterations per substep
     fps: int = 60
     self_contact: bool = True          # fabric on fabric, vertex-triangle and edge-edge
-    tri_ke: float = 1.0e4              # in-plane stretch stiffness [N/m] (2D Lame mu)
-    tri_ka: float = 1.0e4              # in-plane area stiffness [N/m] (2D Lame lambda)
+    tri_ke: float = 2890.0             # in-plane stretch stiffness [N/m] (2D Lame mu)
+    tri_ka: float = 2890.0             # in-plane area stiffness [N/m] (2D Lame lambda)
     tri_kd: float = 1.5e-5             # in-plane damping [N s/m]
-    edge_ke: float = 5.0               # bending stiffness [N m/rad] per hinge (VBD scales it by the edge length)
+    edge_ke: float = 6.61              # bending stiffness [N m/rad] per hinge (VBD scales it by the edge length)
     edge_kd: float = 1.0e-3            # bending damping
+    fabric_density: float = 0.407      # one layer of the denim [kg/m^2] (12 oz per square yard), with structure
+    structure: bool = True             # sewn parts heavier and stiffer (cloth.GARMENT_PARTS); false = a
+                                       # uniform sheet weighing the garment's mass
     particle_radius: float = 0.001     # contact radius of a point against the robot and the table [m]
     self_contact_margin: float = 0.002  # layers of fabric rest this far apart [m]
     self_contact_gap: float = 0.001    # extra reach of the self-contact search [m]

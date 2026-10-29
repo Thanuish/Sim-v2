@@ -55,20 +55,31 @@ relaxation = 1.5             # solver over-relaxation (1 .. 1.8; leave as is)
                              # A garment can override: [garments.NAME.newton]. The
                              # garment's size and mass are shared; these replace its MuJoCo-only settings.
 device = "cuda"              # cuda (NVIDIA GPU, real time) or cpu (Warp on the processor: slow, for tests)
-spacing = 0.010              # distance between simulated points [m] (~8900 for the jeans; 0.008 = ~14000,
-                             # 30 % slower). The cost grows with the points
+spacing = 0.005              # distance between simulated points [m] (~36000 for the jeans). 0.010 = ~8900 and
+                             # ~4x faster, but too coarse to drape like denim (a 30 cm disc stays flat:
+                             # Cusick drape coefficient 1.0 against 0.6-0.85). edge_ke / tri_ke depend on it:
+                             # re-run scripts/fabric_calibrate.py --spacing ... when changing it
 substeps = 16                # solver steps per 1/60 s frame. VBD needs ~16 x 8 sweeps a frame for denim-like
-                             # stretch (a lifted leg stretches 2.4 % at 16 x 8, 12 % at 4 x 8, 25 % without tethers)
-iterations = 8               # VBD iterations per substep. substeps x iterations sets the stretch and the cost
+                             # stretch at 10 mm (a lifted leg stretches 2.4 % at 16 x 8, 12 % at 4 x 8)
+iterations = 16              # VBD iterations per substep. substeps x iterations sets the stretch and the cost:
+                             # at 5 mm, 16 x 8 left the folded jeans 7.8 % stretched (p99), 16 x 16 6.3 %, ~1.6x the time
 fps = 60                     # cloth frames per second of simulated time
 self_contact = true          # fabric on fabric (vertex-triangle and edge-edge, every substep). false = the
                              # layers pass through each other (only for measuring the cost)
-tri_ke = 1.0e4               # in-plane stretch stiffness [N/m] (2D Lame mu). Denim ~1e4 .. 1e5; knits ~1e3
-tri_ka = 1.0e4               # in-plane area stiffness [N/m] (2D Lame lambda)
+tri_ke = 2890.0              # in-plane stretch stiffness [N/m] (2D Lame mu), fitted at 5 mm, 16 x 16: plain denim
+                             # stretches 1 % under 49 N/m, denim once its yarns are straight (a tester reads ~2-4 %
+                             # including the crimp; fitted to 3 % the linear model let a fold stretch 16 %)
+tri_ka = 2890.0              # in-plane area stiffness [N/m] (2D Lame lambda), fitted with tri_ke
 tri_kd = 1.5e-5              # in-plane damping [N s/m]
-edge_ke = 5.0                # bending stiffness per hinge [N m/rad]. VBD scales it by the edge length, so
-                             # it depends on `spacing`: calibrate with scripts/fabric_calibrate.py
+edge_ke = 6.61               # bending stiffness per hinge [N m/rad], fitted at 5 mm, 16 x 16: a 25 mm strip droops
+                             # 41.5 deg at 7 cm overhang (ASTM D1388 bending length 3.5 cm, rigid 12 oz denim
+                             # 3-4.5 cm). A 30 cm disc then drapes to 0.92 (Cusick), a little stiffer than denim's
+                             # 0.6-0.85. It depends on spacing, iterations and tri_ke: scripts/fabric_calibrate.py
 edge_kd = 1.0e-3             # bending damping [N m s/rad]
+fabric_density = 0.407       # one layer of the denim [kg/m^2] (12 oz per square yard), used with `structure`
+structure = true             # sewn jeans: the waistband, fly, hems, seams and pockets weigh and bend like the
+                             # layers sewn there (vrteleop/cloth.py GARMENT_PARTS; the jeans weigh ~0.46 kg).
+                             # false = a uniform sheet of the garment's mass
 particle_radius = 0.001      # contact radius of the fabric against the robot and the table [m]
 self_contact_margin = 0.002  # layers of fabric rest this far apart [m] (two layers of 12 oz denim ~2 mm)
 self_contact_gap = 0.001     # the self-contact search reaches this much further [m]
