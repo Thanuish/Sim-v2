@@ -53,6 +53,8 @@ INPUT_HZ = 72.0          # like the Quest browser
 
 
 class Bench:
+    LAY_HEIGHT = 0.003       # [m] the laid-over leg is let go this far above grasp height
+
     def __init__(self, server_args: list[str], snapshots: bool = True):
         data = tempfile.mkdtemp(prefix="cloth-bench-")
         args = build_parser().parse_args(["--http", "--no-preview", "--stream-cams", "",
@@ -217,15 +219,23 @@ class Bench:
         z0 = S.TABLE_Z + 0.018
         gl = np.r_[V[w, :2] + [-0.02, -0.02], z0]
         gr = np.r_[V[h, :2] + [-0.02, 0.02], z0]
-        tl, tr = gl + [-0.40, 0, 0.16], gr + [-0.40, 0, 0.16]
+        # laid over as a mirror image: each grasp lands as far inside the other leg's corner as it
+        # was inside its own, and is let go 3 mm above grasp height. Further out (1.5 cm past the
+        # corner) dragged the leg taut across the table (15 % stretch by the end); set down at grasp
+        # height the pinched patch crushed the layers below it (24 crossings). Let go, the stiff fold
+        # at the hips still pushes the top leg ~13 cm out over the other one's edge (footprint 0.81
+        # after this fold); the hems fold takes the jeans to ~0.45
+        near = np.where(~far)[0]
+        tl = np.r_[V[near[np.argmax(V[~far, 1] * 5 - V[~far, 0])], 0] + 0.02, gl[1], z0 + self.LAY_HEIGHT]
+        tr = np.r_[V[near[np.argmax(-V[~far, 1] * 5 - V[~far, 0])], 0] + 0.02, gr[1], z0 + self.LAY_HEIGHT]
         self.phase("settle", self.settle)
         self.phase("approach", lambda: (self.move({}, 0.3),
                                         self.move({"left": gl + [0, 0, 0.08], "right": gr + [0, 0, 0.08]}, 2.0),
                                         self.move({"left": gl, "right": gr}, 1.0)))
         self.phase("pinch", lambda: self.move({}, 1.0, close={"left": True, "right": True}))
         self.phase("lift", lambda: self.move({"left": gl + [0, 0, 0.16], "right": gr + [0, 0, 0.16]}, 1.2))
-        self.phase("carry", lambda: self.move({"left": tl, "right": tr}, 2.2))
-        self.phase("lay down", lambda: self.move({"left": tl - [0, 0, 0.12], "right": tr - [0, 0, 0.12]}, 1.0))
+        self.phase("carry", lambda: self.move({"left": tl + [0, 0, 0.16], "right": tr + [0, 0, 0.16]}, 2.2))
+        self.phase("lay down", lambda: self.move({"left": tl, "right": tr}, 1.0))
         self.phase("release", lambda: (self.move({}, 0.9, close={"left": False, "right": False}),
                                        self.move({"left": tl + [0, 0, 0.1], "right": tr + [0, 0, 0.05]}, 0.8),
                                        self.advance(0.5)))

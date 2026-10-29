@@ -22,6 +22,7 @@ import time
 import aiohttp
 import numpy as np
 
+LAY_HEIGHT = 0.003       # [m] the laid-over leg is let go this far above grasp height
 HOME = {"left": np.array([0.45, 0.22, 0.95]), "right": np.array([0.45, -0.22, 0.95])}
 TABLE_Z = 0.75
 CTRL_BASE = {"left": np.array([0.0, 0.25, 1.1]), "right": np.array([0.0, -0.25, 1.1])}
@@ -96,6 +97,11 @@ async def fold(cl: Client):
     z0 = TABLE_Z + 0.018
     gl = np.r_[V[w, :2] + [-0.02, -0.02], z0]
     gr = np.r_[V[h, :2] + [-0.02, 0.02], z0]
+    # laid over as a mirror image: each grasp lands as far inside the other leg's corner as it was
+    # inside its own, let go just above grasp height (see scripts/cloth_bench.py)
+    near = np.where(~far)[0]
+    tl = np.r_[V[near[np.argmax(V[~far, 1] * 5 - V[~far, 0])], 0] + 0.02, gl[1], z0 + LAY_HEIGHT]
+    tr = np.r_[V[near[np.argmax(-V[~far, 1] * 5 - V[~far, 0])], 0] + 0.02, gr[1], z0 + LAY_HEIGHT]
     target = {s: HOME[s].copy() for s in HOME}
     grip = {"left": 0.0, "right": 0.0}               # 0 open .. 1 closed (tracked like the server)
 
@@ -124,9 +130,8 @@ async def fold(cl: Client):
     await move({"left": gl, "right": gr}, 1.0)
     await move({}, 1.0, close={"left": True, "right": True}); report("pinch")
     await move({"left": gl + [0, 0, 0.16], "right": gr + [0, 0, 0.16]}, 1.2); report("lift")
-    tl, tr = gl + [-0.40, 0, 0.16], gr + [-0.40, 0, 0.16]
-    await move({"left": tl, "right": tr}, 2.2); report("carry over")
-    await move({"left": tl - [0, 0, 0.12], "right": tr - [0, 0, 0.12]}, 1.0)
+    await move({"left": tl + [0, 0, 0.16], "right": tr + [0, 0, 0.16]}, 2.2); report("carry over")
+    await move({"left": tl, "right": tr}, 1.0)
     await move({}, 0.9, close={"left": False, "right": False}); report("release")
     await move({"left": tl + [0, 0, 0.1], "right": tr + [0, 0, 0.05]}, 0.8)
     await asyncio.sleep(0.5)

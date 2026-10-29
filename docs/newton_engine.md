@@ -264,9 +264,35 @@ within 3 cm of a seam, mostly along the fold line of the leg laid over. A sheet 
 flat along a curved line (the tapered inseam) without stretching or wrinkling. Real denim
 wrinkles there finer than 5 mm points can form.
 
-**The scripted fold now ends at 0.625, just over the 0.62 success line.** Its fixed 0.40 m
-carry lays the far leg ~20 cm past the near one, so the second pinch catches one leg. The old
-straight-across tethers dragged the other leg along, which a real gripper wouldn't do. Mirroring
-the carry and an arc over the leg didn't fix it: the free hem end swings past and lands beside
-the other leg. The choreography (scripts/cloth_bench.py fold) needs reworking; it is unchanged
-here so the numbers stay comparable.
+**The old scripted fold ended at 0.625, just over the 0.62 success line.** Its fixed 0.40 m
+carry overshot, and the leg was let go 4 cm up, where the stiff fold at the hips sprang it back
+open. The old straight-across tethers had dragged the other leg along, which a real gripper
+wouldn't do.
+
+### The fold, reworked
+
+The far leg is now laid over as a mirror image. Each grasp lands as far inside the other leg's
+corner as it was inside its own, measured from the cloth, and is let go 3 mm above grasp height.
+Variants tried on the 5 mm jeans (first fold, footprint after letting go):
+
+| Lay-down | Footprint | Crossings | Result |
+|---|---|---|---|
+| Fixed 0.40 m carry, let go 4 cm up | 0.78 | 0 | leg springs back open |
+| Mirror, let go at grasp height | 0.54 | 24 | the held patch crushes the layers below it |
+| 1.5 cm past the other leg, at grasp height | 0.57 | 16 | leg dragged taut: 15 % stretch at the end |
+| Grippers 3-5 cm closer together while carrying | 0.48-0.67 | 0-294 | more stretch while carrying (6.9 %) |
+| Mirror, let go 1 cm / 6 mm up | 0.76-0.81 | 0 | top leg slides ~13 cm out |
+| **Mirror, let go 3 mm up (kept)** | **0.81** | **0** | slides out too; the hems fold makes up for it |
+
+The whole fold, as recorded by scripts/collect.py (5 mm sewn jeans, random start):
+
+| | Before | Now |
+|---|---|---|
+| Footprint at the end | 0.625 | **0.433** (bench, no randomization: 0.454) |
+| Stretch, 99th percentile, median over the episode | 3.21 % | 3.07 % |
+| Same, at the end | 2.82 % | 3.11 % |
+| Layer crossings / grippers stuck | 0 / 0 | 0 / 0 |
+
+Let go above the stack, the fold at the hips (waistband, fly and seams, up to 10x the denim's
+bending) still pushes the top leg out over the other one's edge. Only a pinch pressed into the
+layers held it, and that crossed them. This is the remaining weakness of the first fold.
