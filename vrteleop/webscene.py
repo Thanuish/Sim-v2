@@ -105,6 +105,10 @@ def export_scene(m: mujoco.MjModel, max_group: int = 2, cloth: C.ClothInfo | Non
         gtype = int(m.geom_type[g])
         if gtype not in GEOM_TYPES or m.geom_group[g] > max_group:
             continue
+        # a cloth simulated outside MuJoCo is streamed as a flex below; its MuJoCo render mesh
+        # (updated only for MuJoCo's own renderer) would show as a second, motionless garment
+        if mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_GEOM, g) == C.ClothRenderMesh.NAME:
+            continue
         matid = int(m.geom_matid[g])
         rgba = m.mat_rgba[matid] if matid >= 0 else m.geom_rgba[g]
         if rgba[3] <= 0.01:
